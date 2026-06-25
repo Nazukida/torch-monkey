@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+release/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+python/models/*.pth
+python/models/*.pt
+python/models/*.task
+python/models/*.onnx
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Project files (user data)
+*.tmonkey
+autosave.tmonkey
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Temp / exports
+tmp/
+exports/

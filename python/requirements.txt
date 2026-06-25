@@ -1,0 +1,49 @@
+# Torch Monkey — Python AI mocap pipeline dependencies
+#
+# Install CPU-only (dev machine, what we develop against):
+#     pip install -r requirements.txt
+#
+# Install with CUDA (the user's GPU machine). PyTorch wheels are hosted on
+# CUDA-specific index URLs. Pick the index that matches your CUDA toolkit, e.g.:
+#
+#     # CUDA 12.1 (cu121) — most common on modern RTX machines:
+#     pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+#
+#     # CUDA 11.8 (cu118):
+#     pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu118
+#
+#     # Latest CUDA build (auto-detected by torch at runtime):
+#     pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+# Then install the rest of the pipeline:
+#     pip install -r requirements.txt
+#
+# (requirements.txt pins the CPU torch wheel by default; on the GPU machine,
+#  install torch from the CUDA index FIRST so pip does not downgrade it.)
+
+# --- Web server -----------------------------------------------------------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20        # required by FastAPI for multipart uploads
+
+# --- Pose detection / 3D lifting ------------------------------------------
+mediapipe==0.10.18             # BlazePose 33-keypoint pose landmarker
+opencv-python==4.10.0.84       # video frame decoding + BGR/RGB
+
+# --- Numerics -------------------------------------------------------------
+numpy==1.26.4                  # pin <2.0 for mediapipe/torch ABI stability
+scipy==1.13.1                  # Butterworth filter, median filter
+
+# --- Deep learning (CPU wheel default; override with CUDA index above) ----
+# The line below installs the CPU build. On a GPU machine, install the CUDA
+# build FIRST from the index URL in the header comment.
+torch==2.5.1
+
+# --- Export / imaging -----------------------------------------------------
+pygltflib==1.16.3              # glTF/glB motion export
+imageio==2.36.1                # thumbnail / frame IO helpers
+Pillow==11.0.0                 # thumbnail generation
+
+# --- Utilities (transitive but pinned for reproducibility) ----------------
+# (requests is used by scripts/download_models.py if urllib fallback is needed)
+requests==2.32.3
