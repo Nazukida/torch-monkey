@@ -1,4 +1,5 @@
 import { useProjectStore } from '@renderer/stores/projectStore'
+import { useUiStore } from '@renderer/stores/uiStore'
 import { importVideoForCapture } from '@renderer/lib/capture'
 import { useState } from 'react'
 
@@ -77,6 +78,14 @@ export function TopBar({ pythonStatus }: TopBarProps): React.JSX.Element {
           }}
         >
           🎥 导入视频动捕
+        </button>
+        <button
+          className="rounded bg-fuchsia-700 px-2 py-1 font-medium text-white hover:bg-fuchsia-600 disabled:opacity-50"
+          title="从 Bilibili BV 号下载视频并动捕"
+          disabled={pythonStatus !== 'ok'}
+          onClick={() => useUiStore.getState().openBilibili()}
+        >
+          📺 B 站动捕
         </button>
         <div className="ml-2 flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${statusColor}`} />

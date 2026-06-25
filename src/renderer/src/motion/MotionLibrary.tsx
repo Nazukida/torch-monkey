@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useMotionStore } from '@renderer/stores/motionStore'
+import { useUiStore } from '@renderer/stores/uiStore'
 import { importVideoForCapture } from '@renderer/lib/capture'
 import { createSampleMotions } from '@renderer/lib/sampleMotions'
 import type { MotionMeta } from '@shared/types/motion'
@@ -42,6 +43,15 @@ export function MotionLibrary(): React.JSX.Element {
           >
             🎥 视频动捕
           </button>
+          <button
+            className="flex-1 rounded bg-fuchsia-700 px-2 py-1 text-xs text-white hover:bg-fuchsia-600"
+            onClick={() => useUiStore.getState().openBilibili()}
+            title="从 Bilibili BV 号下载并动捕"
+          >
+            📺 B 站
+          </button>
+        </div>
+        <div className="mt-1 flex gap-1">
           <button
             className="flex-1 rounded bg-zinc-800 px-2 py-1 text-xs hover:bg-zinc-700"
             onClick={() => void createSampleMotions()}

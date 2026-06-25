@@ -34,6 +34,7 @@ python tools/selftest_pipeline.py
 - 🎬 自定义 3D 暗舞台（ステージ / stage）+ 聚光灯（スポットライト / spotlight）+ 轨道摄像机（カメラ / camera）
 - 🧍 多角色程序化人形（SMPL-24 骨架 / スケルトン / skeleton）+ 自定义 `.glb` 重定向（リターゲット / retarget）
 - 🎥 视频动捕（モーションキャプチャ / motion capture）：视频 → 2D → 3D → **位置转旋转 IK** → 打艺特化优化（卡点（キメ / kime）检测 / 零过渡刹车 / 受保护平滑）
+- 📺 **B 站动捕（BV 号 / Bilibili）**：给一个 BV 号，自动用 `yt-dlp` 下载并送入动捕管线（详见 [USAGE.md §6.7](./USAGE.md#67-b-站动捕bilibili-bv-号)）
 - 🎚 多轨道时间线（タイムライン / timeline）+ 音频波形 + 节拍（ビート / beat）标记 + 拖拽编排
 - ✨ 荧光棒（サイリウム / cyalume）光轨（トレイル / trail）+ 速度自适应残影 + Bloom 暗环境 + 卡点特效
 - 💾 `.tmonkey` 工程持久化 + glTF / BVH 导出（エクスポート / export）

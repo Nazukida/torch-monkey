@@ -4,6 +4,7 @@ import { LeftPanel } from './components/LeftPanel'
 import { RightPanel } from './components/RightPanel'
 import { TimelineContainer } from './timeline/TimelineContainer'
 import { TopBar } from './components/TopBar'
+import { BilibiliCaptureDialog } from './components/BilibiliCaptureDialog'
 import { useMotionStore } from './stores/motionStore'
 import { useProjectStore } from './stores/projectStore'
 import { useCharacterStore } from './stores/characterStore'
@@ -71,6 +72,7 @@ export default function App(): React.JSX.Element {
         </div>
         <RightPanel />
       </div>
+      <BilibiliCaptureDialog />
     </div>
   )
 }

@@ -43,6 +43,11 @@ pygltflib==1.16.3              # glTF/glB 动作导出
 imageio==2.36.1                # 缩略图 / 帧读写辅助
 Pillow==11.0.0                 # 缩略图生成
 
+# --- Bilibili（B 站 / BV 号）视频获取 -----------------------------------
+# yt-dlp 用于按 BV 号下载单个视频（用户自行指定），再交给动捕管线。
+# 安装：pip install yt-dlp  （此处默认锁版本）
+yt-dlp==2024.12.13             # 单视频下载（download by BV id）
+
 # --- 工具（可传递依赖，固定版本以保证可复现）-----------------------------
 # requests 供 scripts/download_models.py 在 urllib 回退时使用
 requests==2.32.3

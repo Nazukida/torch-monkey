@@ -19,7 +19,8 @@ video ─► VideoProcessor.extract_frames    抽帧（OpenCV + ffprobe 元信�
 ## 环境要求 / Requirements
 
 - Python 3.10+（推荐 3.11）
-- `ffmpeg` / `ffprobe` 在 `PATH` 中（`VideoProcessor` 用它读元信息）。Windows ���请把 `ffmpeg\bin` 加入 PATH，或设置环境变量 `TORCHMONKEY_FFPROBE` / `TORCHMONKEY_FFMPEG` 指向完整可执行文件路径。
+- `ffmpeg` / `ffprobe` 在 `PATH` 中（`VideoProcessor` 用它读元信息）。Windows 上请把 `ffmpeg\bin` 加入 PATH，或设置环境变量 `TORCHMONKEY_FFPROBE` / `TORCHMONKEY_FFMPEG` 指向完整可执行文件路径。
+- （可选）`yt-dlp` —— 仅「B 站动捕（BV 号）」功能需要。已包含在 `requirements.txt`（`pip install -r requirements.txt` 会一并安装）。
 
 ## 安装 / Setup
 
@@ -68,11 +69,25 @@ python server.py --port 19877    # 自定义端口
 | GET  | `/api/health`             | 管线就绪状态（哪些模型已加载）。恒返回 200。 |
 | POST | `/api/preview-video`      | 仅返回 ffprobe 元信息（multipart `file`）。不做 AI 推理。 |
 | POST | `/api/process-video`      | 完整管线。返回 `motion_data` + `stats`。 |
+| POST | `/api/preview-bilibili`   | 按 BV 号探测元信息（标题/时长/UP 主），**不下载**。JSON body。需 yt-dlp。 |
+| POST | `/api/process-bilibili`   | 按 BV 号下载单个视频 → 完整管线。返回 `motion_data` + `stats` + `source`。需 yt-dlp。 |
 | GET  | `/api/progress/{task_id}` | 单任务进度（status/progress/stage/message）。 |
 
 `/api/process-video` 查询参数：`fps`（默认 30）、`smooth`（布尔）、`detect_kime`（布尔）。请求体为 multipart `file` 上传。
 
+`/api/preview-bilibili`、`/api/process-bilibili` 请求体为 JSON：`{bvid, page?, fps?, smooth?, detect_kime?}`。
+`bvid` 接受 `BV1xx...`、`bv1xx...`、完整 `bilibili.com` / `b23.tv` 链接，或 10 位主体。
+
 CORS 允许 `http(s)://localhost:*`、`127.0.0.1:*` 以及 Electron 的 `app://.` 协议。
+
+### B 站动捕（BV 号）/ Bilibili capture
+
+`lib/bilibili_downloader.py` 用 **yt-dlp** 按 BV 号下载**单个**用户指定视频到 `_work/`，再交给与 `/api/process-video` 完全相同的管线。配置见环境变量：
+
+- `TORCHMONKEY_BILI_MAX_DURATION`：视频时长上限（秒，默认 900＝15 分钟；`0` 关闭）。
+- `TORCHMONKEY_BILI_COOKIES`：可选 Netscape cookies 文件路径（高画质 / 会员内容）。
+
+> ⚖️ 仅下载你指定、且**有权使用**的视频用于本地动作分析；不做批量抓取或再分发。
 
 ## 准确率自检（无需 GPU / 无需权重）/ Accuracy self-test
 
@@ -101,7 +116,8 @@ python/
 ├── lib/
 │   ├── blazepose_to_h36m.py   # 规范映射 BlazePose(33) → H36M(17)
 │   ├── expand_joints.py       # H36M(17) → SMPL_24(24)
-│   └── motionbert_model.py    # 内置（vendored）MotionBERT 'lite' 提升器
+│   ├── motionbert_model.py    # 内置（vendored）MotionBERT 'lite' 提升器
+│   └── bilibili_downloader.py # BV 号 → 本地视频（yt-dlp）
 ├── tools/
 │   ├── forward_kinematics.py  # 参考 FK（numpy）
 │   └── selftest_pipeline.py   # IK 闭环准确率测试

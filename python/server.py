@@ -52,6 +52,7 @@ try:
     from fastapi import FastAPI, File, HTTPException, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
+    from pydantic import BaseModel
     import uvicorn
 except ImportError as exc:  # pragma: no cover - environment guard
     sys.stderr.write(
@@ -502,12 +503,43 @@ async def process_video(
     await broker.create(task_id, message="uploaded")
 
     tmp_path = await _save_upload(file)
-    processor = _build_video_processor(tmp_path, fps)
+    try:
+        payload = await _run_pipeline_from_file(
+            video_path=tmp_path,
+            fps=fps,
+            smooth=smooth,
+            detect_kime=detect_kime,
+            source_label=file.filename or "upload",
+            task_id=task_id,
+            start_progress=0.10,
+        )
+        return JSONResponse(content=payload)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+async def _run_pipeline_from_file(
+    video_path: Path,
+    fps: float,
+    smooth: bool,
+    detect_kime: bool,
+    source_label: str,
+    task_id: str,
+    start_progress: float = 0.10,
+) -> Dict[str, Any]:
+    """Run the 5-step pipeline on an already-on-disk video file. Returns the
+    response payload as a plain dict (callers wrap in JSONResponse).
+
+    Shared by ``/api/process-video`` (local upload) and
+    ``/api/process-bilibili`` (BV-id download) so both paths produce identical
+    MotionData. ``source_label`` is stored as the motion's source-video tag.
+    """
+    processor = _build_video_processor(video_path, fps)
 
     try:
         # Step 1: extract frames
         await broker.update(task_id, stage="extract_frames",
-                            progress=0.05, status="running")
+                            progress=start_progress + 0.0, status="running")
         try:
             frames = processor.extract_frames()
         except Exception as exc:
@@ -519,29 +551,29 @@ async def process_video(
             raise HTTPException(status_code=422, detail="No frames decoded from video.")
 
         await broker.update(task_id, stage="extract_frames",
-                            progress=0.15, message=f"{len(frames)} frames")
+                            progress=start_progress + 0.05, message=f"{len(frames)} frames")
 
         # Step 2: 2D keypoints (MediaPipe BlazePose 33)
-        await broker.update(task_id, stage="pose_2d", progress=0.20)
+        await broker.update(task_id, stage="pose_2d", progress=start_progress + 0.15)
         try:
             keypoints_2d = runtime.mediapipe.process_batch(frames)
         except Exception as exc:
             await broker.fail(task_id, f"2D estimation: {exc}")
             raise HTTPException(status_code=500, detail=f"2D pose estimation failed: {exc}") from exc
-        await broker.update(task_id, stage="pose_2d", progress=0.45)
+        await broker.update(task_id, stage="pose_2d", progress=start_progress + 0.30)
 
         # Step 3: 3D lifting (MotionBERT) -> SMPL_24 (24, 3)
-        await broker.update(task_id, stage="pose_3d", progress=0.50)
+        await broker.update(task_id, stage="pose_3d", progress=start_progress + 0.40)
         try:
             poses_3d = runtime.motionbert.infer(keypoints_2d)
         except Exception as exc:
             await broker.fail(task_id, f"3D estimation: {exc}")
             raise HTTPException(status_code=500, detail=f"3D pose estimation failed: {exc}") from exc
-        await broker.update(task_id, stage="pose_3d", progress=0.75)
+        await broker.update(task_id, stage="pose_3d", progress=start_progress + 0.65)
 
         # Step 4: wotagei optimisation (smoothing + kime). The optimizer returns
         # a dict with 'poses', 'kime_frames', and (optionally) 'kime_points'.
-        await broker.update(task_id, stage="optimize", progress=0.80)
+        await broker.update(task_id, stage="optimize", progress=start_progress + 0.70)
         kime_frames: List[int] = []
         try:
             opt_result = runtime.optimizer.optimize(
@@ -556,15 +588,15 @@ async def process_video(
             # Smoothing is best-effort; continue with un-smoothed poses.
             logger.warning("Optimizer failed, continuing un-smoothed: %s", exc)
             await broker.update(task_id, message=f"optimizer skipped: {exc}")
-        await broker.update(task_id, stage="optimize", progress=0.90)
+        await broker.update(task_id, stage="optimize", progress=start_progress + 0.80)
 
         # Step 5: export to MotionData JSON
-        await broker.update(task_id, stage="export", progress=0.92)
+        await broker.update(task_id, stage="export", progress=start_progress + 0.82)
         try:
             motion_data = runtime.exporter.to_motion_data(
                 poses_3d=poses_3d,
                 fps=fps,
-                source_video=file.filename or "",
+                source_video=source_label,
                 kime_frames=kime_frames,
                 skeleton_type=settings.DEFAULT_SKELETON_TYPE,
             )
@@ -582,18 +614,124 @@ async def process_video(
             "kimeFrames": kime_frames,
             "task_id": task_id,
         }
-        logger.info("process-video complete: task=%s frames=%d kime=%d",
-                    task_id, len(frames), len(kime_frames))
-        return JSONResponse(content={
+        logger.info("pipeline complete: task=%s source=%s frames=%d kime=%d",
+                    task_id, source_label, len(frames), len(kime_frames))
+        return {
             "task_id": task_id,
             "status": "completed",
             "motion_data": motion_data,
             "stats": stats,
-        })
+        }
 
     finally:
         processor.cleanup()
-        tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Bilibili (BV 号) capture: download a single video by BV id, then run the
+# same pipeline as /api/process-video. Uses yt-dlp (lib.bilibili_downloader).
+# ---------------------------------------------------------------------------
+class BilibiliCaptureRequest(BaseModel):
+    """JSON body for ``/api/process-bilibili``."""
+    bvid: str
+    page: Optional[int] = None
+    fps: float = settings.DEFAULT_TARGET_FPS
+    smooth: bool = True
+    detect_kime: bool = True
+
+
+class BilibiliPreviewRequest(BaseModel):
+    """JSON body for ``/api/preview-bilibili``."""
+    bvid: str
+    page: Optional[int] = None
+
+
+@app.post("/api/preview-bilibili")
+async def preview_bilibili(req: BilibiliPreviewRequest) -> JSONResponse:
+    """Probe a Bilibili video's metadata (title / duration / uploader) **without**
+    downloading. Lets the UI confirm what will be captured first."""
+    try:
+        from lib.bilibili_downloader import probe_bilibili, BilibiliDownloadError
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="bilibili downloader module missing.") from exc
+
+    try:
+        info = await asyncio.to_thread(
+            probe_bilibili, req.bvid, req.page, settings.BILI_COOKIES_PATH or None
+        )
+    except BilibiliDownloadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Bilibili probe failed: {exc}") from exc
+    return JSONResponse(content={"ok": True, "info": info})
+
+
+@app.post("/api/process-bilibili")
+async def process_bilibili(req: BilibiliCaptureRequest) -> JSONResponse:
+    """Download a Bilibili video by BV id, then run the full mocap pipeline.
+
+    Equivalent to ``/api/process-video`` but the source is a BV id / bilibili URL
+    instead of an uploaded file. The resulting MotionData has ``source_video``
+    set to ``bilibili:<BV>``. Requires ``yt-dlp`` (returns 503 with a clear
+    message if it is not installed) and the usual model readiness gate.
+    """
+    # Gate on model readiness up front for a clear 503.
+    _ = runtime.mediapipe
+    _ = runtime.motionbert
+    _ = runtime.optimizer
+    _ = runtime.exporter
+
+    try:
+        from lib.bilibili_downloader import download_bilibili, BilibiliDownloadError
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="bilibili downloader module missing.") from exc
+
+    task_id = str(uuid.uuid4())
+    await broker.create(task_id, message="resolving bilibili")
+
+    # Download (blocking) in a worker thread so the event loop stays responsive.
+    await broker.update(task_id, stage="download", progress=0.02,
+                        message=f"downloading {req.bvid}")
+    try:
+        dl = await asyncio.to_thread(
+            download_bilibili,
+            req.bvid,
+            settings.WORK_DIR,
+            req.page,
+            settings.BILI_COOKIES_PATH or None,
+            settings.BILI_MAX_DURATION_SEC,
+        )
+    except BilibiliDownloadError as exc:
+        await broker.fail(task_id, str(exc))
+        # yt-dlp missing is a 503 (service-dep), other failures are 502 (upstream).
+        status = 503 if "yt-dlp is not installed" in str(exc) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except Exception as exc:
+        await broker.fail(task_id, str(exc))
+        raise HTTPException(status_code=502, detail=f"Bilibili download failed: {exc}") from exc
+
+    video_path = Path(dl["video_path"])
+    source_label = f"bilibili:{dl['bvid']}" + (f"?p={dl['page']}" if dl.get("page", 1) > 1 else "")
+    try:
+        payload = await _run_pipeline_from_file(
+            video_path=video_path,
+            fps=req.fps,
+            smooth=req.smooth,
+            detect_kime=req.detect_kime,
+            source_label=source_label,
+            task_id=task_id,
+            start_progress=0.15,
+        )
+        payload["source"] = {
+            "bvid": dl["bvid"],
+            "title": dl["title"],
+            "duration": dl["duration"],
+            "url": dl["url"],
+            "page": dl.get("page", 1),
+        }
+        return JSONResponse(content=payload)
+    finally:
+        video_path.unlink(missing_ok=True)
 
 
 @app.get("/api/progress/{task_id}")

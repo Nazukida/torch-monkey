@@ -43,6 +43,10 @@ const api: ElectronAPI = {
   processVideo: (filePath, options) =>
     ipcRenderer.invoke('python:processVideo', filePath, options),
 
+  previewBilibili: (bvid, page) => ipcRenderer.invoke('python:previewBilibili', bvid, page),
+  processBilibili: (bvid, options) =>
+    ipcRenderer.invoke('python:processBilibili', bvid, options),
+
   onProgress: (callback: (e: ProgressEvent) => void) => {
     const listener = (_e: IpcRendererEvent, payload: ProgressEvent) => callback(payload)
     ipcRenderer.on('pipeline:progress', listener)

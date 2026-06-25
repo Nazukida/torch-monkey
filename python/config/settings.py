@@ -121,6 +121,19 @@ DEFAULT_TAGS: List[str] = ["ai-capture", "wotagei"]
 FFPROBE_BIN: str = os.environ.get("TORCHMONKEY_FFPROBE", "ffprobe")
 FFMPEG_BIN: str = os.environ.get("TORCHMONKEY_FFMPEG", "ffmpeg")
 
+# ---------------------------------------------------------------------------
+# Bilibili (BV 号) video acquisition
+# ---------------------------------------------------------------------------
+# yt-dlp (https://github.com/yt-dlp/yt-dlp) is imported lazily by
+# lib.bilibili_downloader. Install it with:  pip install yt-dlp
+# Optional Netscape cookies file for higher-quality / member-only content.
+# Export from your browser, then set this to the file path.
+BILI_COOKIES_PATH: str = os.environ.get("TORCHMONKEY_BILI_COOKIES", "")
+# Refuse videos longer than this (seconds) to avoid accidental huge downloads.
+# Default 15 minutes. Set to 0 to disable the cap.
+BILI_MAX_DURATION_SEC: float = float(os.environ.get("TORCHMONKEY_BILI_MAX_DURATION", "900"))
+
+
 
 def ensure_dirs() -> None:
     """Create the on-disk working directories if they are missing.

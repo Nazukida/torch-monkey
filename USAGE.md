@@ -1,7 +1,7 @@
 # Torch Monkey 使用文档 / 使用ガイド / Usage Guide
 
 > Wota-艺（ヲタ芸 / wotagei）3D 编排与可视化软件 · 基于 3D 重建与渲染 / 3D再構築とレンダリングに基づく / Based on 3D reconstruction & rendering.
-> 版本 1.0 · 2026-06-25
+> 版本 0.01 · 2026-06-25
 
 > 本文档以中文为主体语言；关键名词首次出现时标注日语与英语，例如「卡点（キメ / kime）」。完整对照见 [术语表](#术语对照表--glossary)。
 
@@ -70,6 +70,8 @@ Torch Monkey 让你可以：
 | 后期处理 | ポストプロセス | post-processing |
 | 抽帧 | フレーム抽出 | frame extraction |
 | 工程文件 | プロジェクトファイル | project file |
+| 哔哩哔哩 / B 站 | 哔哩哔哩 / ビリビリ | Bilibili |
+| BV 号 | BV 番号 / 動画 ID | BV id (Bilibili video id) |
 
 ---
 
@@ -140,6 +142,8 @@ pip install -r requirements.txt
 python -c "import torch; print('cuda' if torch.cuda.is_available() else 'cpu', torch.__version__)"
 ```
 
+> **B 站动捕（BV 号）额外依赖**：若要使用「从 Bilibili BV 号下载并动捕」功能，需安装 `yt-dlp`（已包含在 `requirements.txt` 中，`pip install -r requirements.txt` 会一并装上）。详见 [6.7 节](#67-b-站动捕bilibili-bv-号)。
+
 ### 3.3 下载模型权重
 
 ```bash
@@ -192,6 +196,8 @@ python server.py --port 19877          # 自定义端口
 | GET | `/api/health` | 健康检查 + 模型加载状态 |
 | POST | `/api/preview-video` | 上传视频，ffprobe 快速返回元信息（不做推理） |
 | POST | `/api/process-video` | 完整管线：视频 → 帧提取 → 2D → 3D → 优化 → MotionData JSON |
+| POST | `/api/preview-bilibili` | 按 BV 号探测元信息（标题/时长/UP 主），**不下载**。需 yt-dlp |
+| POST | `/api/process-bilibili` | 按 BV 号下载单个视频 → 完整动捕管线 → MotionData。需 yt-dlp |
 
 ### 4.3 准确率自检（无需 GPU / 无需模型）
 
@@ -284,8 +290,34 @@ OVERALL: PASS
 
 ### 6.6 工程
 
-- 顶栏：新建 / 打开 / 保存 / 另存为；「🎥 导入视频动捕」。
+- 顶栏：新建 / 打开 / 保存 / 另存为；「🎥 导入视频动捕」、「📺 B 站动捕」。
 - `Ctrl+S` 保存为 `.tmonkey`（同时镜像进 SQLite 的 projects 表作为备份）。
+
+### 6.7 B 站动捕（Bilibili BV 号）
+
+除了导入本地视频，你还可以**直接给定 Bilibili 视频编号（BV 号 / BV id）**，软件会自动下载该视频并送入 AI 动捕管线，结果同样进入动作库。
+
+**入口**：顶栏「📺 B 站动捕」按钮，或动作库面板的「📺 B 站」按钮。
+
+**操作流程**：
+
+1. 在弹窗输入 BV 号或 B 站链接，例如：
+   - `BV1xx411c7mD`（大小写不限，也可只填 10 位主体）
+   - `https://www.bilibili.com/video/BV1xx411c7mD`
+   - `https://b23.tv/xxxxx`（短链，自动解析）
+2. （可选）点击「🔍 探测」预览标题 / 时长 / UP 主，确认是你要的视频。
+3. 选择分 P（Page）、FPS（30/60）、是否平滑 / 卡点检测。
+4. 点击「⬇️ 下载并动捕」：软件先用 `yt-dlp` 下载该视频到本地临时目录，再走完整管线（抽帧 → 2D → 3D → IK 旋转 → 打艺优化 → MotionData）。
+5. 完成后动作自动入库，名称取自视频标题，标签含 `bilibili` 与 `BV:<编号>`，来源记录为该视频链接。
+
+**配置**：
+
+- 视频时长上限默认 **15 分钟**（避免误下长视频）。可通过环境变量 `TORCHMONKEY_BILI_MAX_DURATION`（秒）调整，设为 `0` 关闭限制。
+- 高画质 / 会员专属内容：可选提供 Netscape 格式 cookies 文件，路径写入环境变量 `TORCHMONKEY_BILI_COOKIES`。
+
+> ⚖️ **合规提示 / Responsibility**：本功能**仅下载你指定单个视频**，用于本地动作分析，不做批量抓取、也不重新分发（redistribute）。请确保你**有权下载与使用**所选视频（例如你自己的表演、或已获授权的内容）。本质上等同于你手动用 `yt-dlp` 下载一个链接再喂给管线。
+
+> 「自行拿去训练」：本功能把下载的视频**自动送入 AI 动捕推理管线**（即视频 → 动作提取），而非在单条视频上微调模型——单条数据不足以训练；管线本身已在 `selftest_pipeline.py` 中验证准确率（见 4.3）。
 
 ---
 
@@ -366,7 +398,7 @@ torch-monkey/
 │  ├─ pipeline/     video_processor / pose_estimator_2d / pose_estimator_3d
 │  │                / ik_solver / wotagei_optimizer / format_exporter
 │  ├─ lib/          skeleton_def / forward_kinematics / motionbert_model
-│  │                / blazepose_to_h36m / expand_joints
+│  │                / blazepose_to_h36m / expand_joints / bilibili_downloader
 │  ├─ tools/        selftest_pipeline（准确率闭环自检）
 │  ├─ scripts/      download_models
 │  └─ requirements.txt
@@ -405,6 +437,13 @@ npm run build:win     # 构建 + electron-builder 打包 Windows 安装包
 - 确认已下载 MotionBERT 权重（缺失会退化为几何提升器，精度下降）。
 - 在 GPU 上运行以获得更稳的时序推理。
 - 运行 `python tools/selftest_pipeline.py` 确认管线本身正确。
+
+**B 站动捕（BV 号）失败？**
+- 确认已安装 `yt-dlp`：`pip install yt-dlp`（含在 `requirements.txt`）。
+- 管线离线时该按钮不可用——先让顶栏指示灯变绿（见上）。
+- 视频过长（>15 分钟）会被拒绝：调高 `TORCHMONKEY_BILI_MAX_DURATION` 或裁剪源视频。
+- 高画质 / 会员视频下载失败：导出浏览器 cookies 为 Netscape 文件，路径设到 `TORCHMONKEY_BILI_COOKIES`。
+- 网络问题或 B 站接口变动：升级 `yt-dlp`（`pip install -U yt-dlp`）后重试。
 
 **播放时角色不动 / 抖动？**
 - 确认动作已拖到该角色对应的**角色轨道**（蓝色）。

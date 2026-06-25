@@ -7,7 +7,9 @@ import { ProjectHandler } from './services/project-handler'
 import type {
   VideoProcessOptions,
   VideoProcessResult,
-  VideoInfo
+  VideoInfo,
+  BilibiliProcessOptions,
+  BilibiliSource
 } from '@shared/types/electron'
 import type { ListMotionsOptions } from '@shared/types/motion'
 import type { ProjectFile } from '@shared/types/project'
@@ -153,6 +155,20 @@ function sendProgress(phase: VideoProcessResult['status'] | string, progress: nu
   })
 }
 
+/** Normalize a pipeline JSON response (snake_case server → camelCase renderer). */
+function normalizeProcessResult(
+  raw: Record<string, unknown>
+): VideoProcessResult & { source?: BilibiliSource } {
+  return {
+    taskId: (raw.task_id as string) ?? (raw.taskId as string) ?? '',
+    status: ((raw.status as string) ?? 'failed') as VideoProcessResult['status'],
+    motionData: (raw.motion_data ?? raw.motionData ?? null) as VideoProcessResult['motionData'],
+    error: raw.error as string | undefined,
+    stats: (raw.stats ?? undefined) as VideoProcessResult['stats'],
+    source: (raw.source ?? undefined) as BilibiliSource | undefined
+  }
+}
+
 function registerPython(): void {
   ipcMain.handle('python:health', async () => {
     try {
@@ -214,13 +230,73 @@ function registerPython(): void {
         }
         // Normalize snake_case (server) → camelCase (renderer contract).
         const raw = (await res.json()) as Record<string, unknown>
-        const json: VideoProcessResult = {
-          taskId: (raw.task_id as string) ?? (raw.taskId as string) ?? '',
-          status: ((raw.status as string) ?? 'failed') as VideoProcessResult['status'],
-          motionData: (raw.motion_data ?? raw.motionData ?? null) as VideoProcessResult['motionData'],
-          error: raw.error as string | undefined,
-          stats: (raw.stats ?? undefined) as VideoProcessResult['stats']
+        const json = normalizeProcessResult(raw)
+        sendProgress('done', 1, 'Completed')
+        return json
+      } catch (e) {
+        sendProgress('error', 0, (e as Error).message)
+        return {
+          taskId: '',
+          status: 'failed',
+          motionData: null,
+          error: (e as Error).message
         }
+      }
+    }
+  )
+
+  // ---- Bilibili (BV 号) capture: probe metadata, then download + run pipeline.
+  ipcMain.handle(
+    'python:previewBilibili',
+    async (_e, bvid: string, page?: number) => {
+      if (!python.isRunning) return { error: 'Python pipeline is not running' }
+      try {
+        const res = await fetch(`${python.getBaseUrl()}/api/preview-bilibili`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bvid, page: page ?? null })
+        })
+        if (!res.ok) {
+          const text = await res.text()
+          return { error: `HTTP ${res.status}: ${text}` }
+        }
+        return (await res.json()) as { ok?: boolean; info?: unknown; error?: string }
+      } catch (e) {
+        return { error: (e as Error).message }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'python:processBilibili',
+    async (_e, bvid: string, options: BilibiliProcessOptions = {}) => {
+      if (!python.isRunning) {
+        return {
+          taskId: '',
+          status: 'failed',
+          motionData: null,
+          error: 'Python pipeline is not running'
+        }
+      }
+      try {
+        sendProgress('frames', 0.02, `Downloading Bilibili ${bvid}…`)
+        const res = await fetch(`${python.getBaseUrl()}/api/process-bilibili`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            bvid,
+            page: options.page ?? null,
+            fps: options.fps ?? 30,
+            smooth: options.smooth ?? true,
+            detect_kime: options.detectKime ?? true
+          })
+        })
+        if (!res.ok) {
+          const text = await res.text()
+          return { taskId: '', status: 'failed', motionData: null, error: `HTTP ${res.status}: ${text}` }
+        }
+        const raw = (await res.json()) as Record<string, unknown>
+        const json = normalizeProcessResult(raw)
         sendProgress('done', 1, 'Completed')
         return json
       } catch (e) {

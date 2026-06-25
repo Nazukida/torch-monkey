@@ -33,6 +33,30 @@ export interface VideoProcessOptions {
   detectKime?: boolean
 }
 
+/** Options for Bilibili (BV 号) capture. `page` selects a multi-part (P) index. */
+export interface BilibiliProcessOptions extends VideoProcessOptions {
+  page?: number
+}
+
+/** Metadata describing a resolved Bilibili video (probe or post-download). */
+export interface BilibiliVideoInfo {
+  bvid: string
+  url: string
+  title: string
+  uploader?: string
+  duration: number
+  page: number
+}
+
+/** Source provenance attached to a Bilibili-captured motion. */
+export interface BilibiliSource {
+  bvid: string
+  title: string
+  duration: number
+  url: string
+  page: number
+}
+
 export interface VideoProcessResult {
   taskId: string
   status: 'completed' | 'failed'
@@ -117,6 +141,16 @@ export interface ElectronAPI {
     filePath: string,
     options?: VideoProcessOptions
   ) => Promise<VideoProcessResult>
+
+  // ---- Bilibili (BV 号) capture ----
+  previewBilibili: (
+    bvid: string,
+    page?: number
+  ) => Promise<{ info?: BilibiliVideoInfo; error?: string }>
+  processBilibili: (
+    bvid: string,
+    options?: BilibiliProcessOptions
+  ) => Promise<VideoProcessResult & { source?: BilibiliSource }>
 
   // ---- Progress events (main -> renderer) ----
   onProgress: (callback: (e: ProgressEvent) => void) => () => void
