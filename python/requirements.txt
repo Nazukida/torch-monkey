@@ -1,49 +1,48 @@
-# Torch Monkey — Python AI mocap pipeline dependencies
+# Torch Monkey — Python AI 动捕管线（AI Mocap Pipeline）依赖
 #
-# Install CPU-only (dev machine, what we develop against):
+# CPU 安装（开发机，默认）：
 #     pip install -r requirements.txt
 #
-# Install with CUDA (the user's GPU machine). PyTorch wheels are hosted on
-# CUDA-specific index URLs. Pick the index that matches your CUDA toolkit, e.g.:
+# CUDA/GPU 安装（你的目标机）。PyTorch wheel 托管在 CUDA 专用 index 上，
+# 请选择与你本机 CUDA 工具链匹配的 index，例如：
 #
-#     # CUDA 12.1 (cu121) — most common on modern RTX machines:
+#     # CUDA 12.1（cu121）—— 现代 RTX 显卡最常见：
 #     pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 #
-#     # CUDA 11.8 (cu118):
+#     # CUDA 11.8（cu118）：
 #     pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu118
 #
-#     # Latest CUDA build (auto-detected by torch at runtime):
+#     # 最新 CUDA 构建（torch 运行时自动探测）：
 #     pip install torch --index-url https://download.pytorch.org/whl/cu121
 #
-# Then install the rest of the pipeline:
+# 然后再装其余依赖：
 #     pip install -r requirements.txt
 #
-# (requirements.txt pins the CPU torch wheel by default; on the GPU machine,
-#  install torch from the CUDA index FIRST so pip does not downgrade it.)
+# （requirements.txt 默认锁 CPU 版 torch wheel；GPU 机器请「先」从 CUDA index
+#  安装 torch，这样 pip 才不会把它降级回 CPU 版。）
 
-# --- Web server -----------------------------------------------------------
+# --- Web 服务（Web server）----------------------------------------------
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-python-multipart==0.0.20        # required by FastAPI for multipart uploads
+python-multipart==0.0.20        # FastAPI 处理 multipart 上传所需
 
-# --- Pose detection / 3D lifting ------------------------------------------
-mediapipe==0.10.18             # BlazePose 33-keypoint pose landmarker
-opencv-python==4.10.0.84       # video frame decoding + BGR/RGB
+# --- 姿态检测 / 3D 提升（Pose detection / 3D lifting）-------------------
+mediapipe==0.10.18             # BlazePose 33 关键点（keypoint）姿态检测
+opencv-python==4.10.0.84       # 视频帧解码 + BGR/RGB 转换
 
-# --- Numerics -------------------------------------------------------------
-numpy==1.26.4                  # pin <2.0 for mediapipe/torch ABI stability
-scipy==1.13.1                  # Butterworth filter, median filter
+# --- 数值计算（Numerics）------------------------------------------------
+numpy==1.26.4                  # 锁 <2.0 以保证 mediapipe/torch ABI 稳定
+scipy==1.13.1                  # 巴特沃斯滤波（Butterworth）、中值滤波（median）
 
-# --- Deep learning (CPU wheel default; override with CUDA index above) ----
-# The line below installs the CPU build. On a GPU machine, install the CUDA
-# build FIRST from the index URL in the header comment.
+# --- 深度学习（CPU wheel 默认；GPU 请按上文 CUDA index 覆盖）-------------
+# 下面这行装的是 CPU 版。GPU 机器请「先」按文件头部的 CUDA index 安装。
 torch==2.5.1
 
-# --- Export / imaging -----------------------------------------------------
-pygltflib==1.16.3              # glTF/glB motion export
-imageio==2.36.1                # thumbnail / frame IO helpers
-Pillow==11.0.0                 # thumbnail generation
+# --- 导出 / 图像（Export / imaging）-------------------------------------
+pygltflib==1.16.3              # glTF/glB 动作导出
+imageio==2.36.1                # 缩略图 / 帧读写辅助
+Pillow==11.0.0                 # 缩略图生成
 
-# --- Utilities (transitive but pinned for reproducibility) ----------------
-# (requests is used by scripts/download_models.py if urllib fallback is needed)
+# --- 工具（可传递依赖，固定版本以保证可复现）-----------------------------
+# requests 供 scripts/download_models.py 在 urllib 回退时使用
 requests==2.32.3

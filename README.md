@@ -29,14 +29,16 @@ python tools/selftest_pipeline.py
 
 📘 **完整文档见 [USAGE.md](./USAGE.md)**（安装、运行、功能、AI 管线与准确率、快捷键、排错）。
 
-## 功能 / Features
+## 功能 / 機能 / Features
 
-- 🎬 自定义 3D 暗舞台 + 聚光灯 + 轨道摄像机
-- 🧍 多角色程序化人形（SMPL-24 骨架）+ 自定义 `.glb` 重定向
-- 🎥 视频动捕：视频 → 2D → 3D → **位置转旋转 IK** → 打艺特化优化（卡点检测 / 零过渡刹车 / 受保护平滑）
-- 🎚 多轨道时间线 + 音频波形 + 节拍标记 + 拖拽编排
-- ✨ 荧光棒（サイリウム）光轨 + 速度自适应残影 + Bloom 暗环境 + 卡点特效
-- 💾 `.tmonkey` 工程持久化 + glTF / BVH 导出
+- 🎬 自定义 3D 暗舞台（ステージ / stage）+ 聚光灯（スポットライト / spotlight）+ 轨道摄像机（カメラ / camera）
+- 🧍 多角色程序化人形（SMPL-24 骨架 / スケルトン / skeleton）+ 自定义 `.glb` 重定向（リターゲット / retarget）
+- 🎥 视频动捕（モーションキャプチャ / motion capture）：视频 → 2D → 3D → **位置转旋转 IK** → 打艺特化优化（卡点（キメ / kime）检测 / 零过渡刹车 / 受保护平滑）
+- 🎚 多轨道时间线（タイムライン / timeline）+ 音频波形 + 节拍（ビート / beat）标记 + 拖拽编排
+- ✨ 荧光棒（サイリウム / cyalume）光轨（トレイル / trail）+ 速度自适应残影 + Bloom 暗环境 + 卡点特效
+- 💾 `.tmonkey` 工程持久化 + glTF / BVH 导出（エクスポート / export）
+
+> 关键名词三语对照见 [USAGE.md 术语表](./USAGE.md#术语对照表--glossary)。
 
 ## 许可 / License
 
