@@ -51,3 +51,8 @@ yt-dlp==2024.12.13             # 单视频下载（download by BV id）
 # --- 工具（可传递依赖，固定版本以保证可复现）-----------------------------
 # requests 供 scripts/download_models.py 在 urllib 回退时使用
 requests==2.32.3
+
+# --- 终端可视化（Terminal dashboard）-------------------------------------
+# rich 驱动 tools/dashboard.py 的实时面板；纯 Python、轻量。dashboard 在 rich
+# 缺失时会自动降级为纯文本，因此它是「锦上添花」而非硬依赖。
+rich==13.9.4

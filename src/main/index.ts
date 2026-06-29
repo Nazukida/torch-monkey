@@ -3,6 +3,7 @@ import path from 'path'
 import fs from 'fs'
 import { DatabaseHandler } from './ipc/database-handler'
 import { PythonManager } from './services/python-manager'
+import type { PythonMode } from './services/python-manager'
 import { ProjectHandler } from './services/project-handler'
 import type {
   VideoProcessOptions,
@@ -169,15 +170,70 @@ function normalizeProcessResult(
   }
 }
 
+/** Pipeline health descriptor returned to the renderer. */
+interface PythonHealth {
+  status: 'ok' | 'down'
+  models?: { mediapipe: boolean; motionbert: boolean }
+  runtime?: unknown
+  endpoint: { mode: PythonMode; baseUrl: string }
+}
+
+/** Probe the configured pipeline's /api/health. Never throws. */
+async function probePythonHealth(): Promise<PythonHealth> {
+  const endpoint = { mode: python.mode, baseUrl: python.getBaseUrl() }
+  try {
+    const res = await fetch(`${python.getBaseUrl()}/api/health`)
+    if (!res.ok) return { status: 'down', endpoint }
+    const json = (await res.json()) as {
+      models?: { mediapipe: boolean; motionbert: boolean }
+      runtime?: unknown
+    }
+    return { status: 'ok', models: json.models, runtime: json.runtime, endpoint }
+  } catch {
+    return { status: 'down', endpoint }
+  }
+}
+
 function registerPython(): void {
-  ipcMain.handle('python:health', async () => {
+  ipcMain.handle('python:health', async () => probePythonHealth())
+
+  // ---- Connection configuration (the fix for "the port forward didn't reach me"):
+  //      lets the renderer switch between local / remote(SSH-tunnel) / remote(LAN)
+  //      and verify a URL without restarting the app. ----------------------------
+  ipcMain.handle('python:getConfig', () => ({
+    mode: python.mode,
+    remoteUrl: python.remoteUrl,
+    port: python.port
+  }))
+
+  ipcMain.handle('python:configure', async (_e, cfg: { mode?: PythonMode; remoteUrl?: string; port?: number }) => {
+    const mode: PythonMode = cfg?.mode === 'remote' ? 'remote' : 'local'
+    const remoteUrl = typeof cfg?.remoteUrl === 'string' ? cfg.remoteUrl : ''
+    const port = typeof cfg?.port === 'number' && cfg.port > 0 ? cfg.port : python.port
+    // Persist as JSON-encoded values (matches the existing python_port convention).
+    db?.setSetting('python_mode', JSON.stringify(mode))
+    db?.setSetting('python_remote_url', JSON.stringify(remoteUrl))
+    db?.setSetting('python_port', JSON.stringify(port))
+    await python.reconfigure({ mode, remoteUrl, port })
+    return probePythonHealth()
+  })
+
+  ipcMain.handle('python:testConnection', async (_e, url?: string) => {
+    let base = (url ?? '').trim() || python.getBaseUrl()
+    if (!/^https?:\/\//i.test(base)) base = `http://${base}`
+    base = base.replace(/\/+$/, '')
+    const t0 = Date.now()
     try {
-      const res = await fetch(`${python.getBaseUrl()}/api/health`)
-      if (!res.ok) return { status: 'down' as const }
-      const json = (await res.json()) as { models?: { mediapipe: boolean; motionbert: boolean } }
-      return { status: 'ok' as const, models: json.models }
-    } catch {
-      return { status: 'down' as const }
+      const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(5000) })
+      const latencyMs = Date.now() - t0
+      if (!res.ok) return { ok: false as const, latencyMs, error: `HTTP ${res.status}` }
+      const json = (await res.json()) as {
+        models?: { mediapipe: boolean; motionbert: boolean }
+        runtime?: unknown
+      }
+      return { ok: true as const, latencyMs, models: json.models, runtime: json.runtime }
+    } catch (e) {
+      return { ok: false as const, latencyMs: Date.now() - t0, error: (e as Error).message }
     }
   })
 
@@ -202,7 +258,7 @@ function registerPython(): void {
   ipcMain.handle(
     'python:processVideo',
     async (_e, filePath: string, options: VideoProcessOptions = {}) => {
-      if (!python.isRunning) {
+      if (!python.isUsable) {
         return {
           taskId: '',
           status: 'failed',
@@ -249,7 +305,7 @@ function registerPython(): void {
   ipcMain.handle(
     'python:previewBilibili',
     async (_e, bvid: string, page?: number) => {
-      if (!python.isRunning) return { error: 'Python pipeline is not running' }
+      if (!python.isUsable) return { error: 'Python pipeline is not running' }
       try {
         const res = await fetch(`${python.getBaseUrl()}/api/preview-bilibili`, {
           method: 'POST',
@@ -270,7 +326,7 @@ function registerPython(): void {
   ipcMain.handle(
     'python:processBilibili',
     async (_e, bvid: string, options: BilibiliProcessOptions = {}) => {
-      if (!python.isRunning) {
+      if (!python.isUsable) {
         return {
           taskId: '',
           status: 'failed',
@@ -384,9 +440,23 @@ function buildMenu(): Menu {
 app.whenReady().then(async () => {
   db = new DatabaseHandler()
   projects = new ProjectHandler()
+  // Settings are JSON-encoded strings in the settings table.
+  const readStr = (key: string, fallback: string): string => {
+    const raw = db!.getSetting(key)
+    if (!raw) return fallback
+    try {
+      return JSON.parse(raw) as string
+    } catch {
+      return fallback
+    }
+  }
   const portStr = db.getSetting('python_port')
   const port = portStr ? Number(JSON.parse(portStr)) : undefined
-  python = new PythonManager(port)
+  python = new PythonManager({
+    mode: readStr('python_mode', 'local') === 'remote' ? 'remote' : 'local',
+    remoteUrl: readStr('python_remote_url', ''),
+    port
+  })
 
   Menu.setApplicationMenu(buildMenu())
 

@@ -5,15 +5,18 @@ import { useState } from 'react'
 
 interface TopBarProps {
   pythonStatus: 'checking' | 'ok' | 'down'
+  /** Compact connection summary, e.g. "远程·cuda:0" / "本地·cpu". */
+  pythonSummary?: string
 }
 
-export function TopBar({ pythonStatus }: TopBarProps): React.JSX.Element {
+export function TopBar({ pythonStatus, pythonSummary }: TopBarProps): React.JSX.Element {
   const metadata = useProjectStore((s) => s.metadata)
   const dirty = useProjectStore((s) => s.dirty)
   const save = useProjectStore((s) => s.save)
   const saveAs = useProjectStore((s) => s.saveAs)
   const open = useProjectStore((s) => s.open)
   const newProject = useProjectStore((s) => s.newProject)
+  const openServerSettings = useUiStore((s) => s.openServerSettings)
   const [busy, setBusy] = useState(false)
 
   const statusColor =
@@ -90,6 +93,14 @@ export function TopBar({ pythonStatus }: TopBarProps): React.JSX.Element {
         <div className="ml-2 flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${statusColor}`} />
           <span className="text-zinc-400">{statusLabel}</span>
+          {pythonSummary && <span className="text-zinc-500">· {pythonSummary}</span>}
+          <button
+            className="ml-1 rounded px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            title="AI 管线 / 服务器设置（本地 / 远程 SSH 隧道 / 局域网）"
+            onClick={openServerSettings}
+          >
+            ⚙
+          </button>
         </div>
       </div>
     </div>

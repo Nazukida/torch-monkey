@@ -1,7 +1,7 @@
 # Torch Monkey 使用文档 / 使用ガイド / Usage Guide
 
 > Wota-艺（ヲタ芸 / wotagei）3D 编排与可视化软件 · 基于 3D 重建与渲染 / 3D再構築とレンダリングに基づく / Based on 3D reconstruction & rendering.
-> 版本 0.01 · 2026-06-25
+> 版本 0.04 · 2026-06-29
 
 > 本文档以中文为主体语言；关键名词首次出现时标注日语与英语，例如「卡点（キメ / kime）」。完整对照见 [术语表](#术语对照表--glossary)。
 
@@ -20,6 +20,7 @@
 9. [项目结构与数据格式](#9-项目结构与数据格式)
 10. [打包发布](#10-打包发布)
 11. [常见问题 / Troubleshooting](#11-常见问题--troubleshooting)
+12. [Linux 服务器训练 & 远程连接](#12-linux-服务器训练--远程连接)
 
 ---
 
@@ -79,9 +80,9 @@ Torch Monkey 让你可以：
 
 | 组件 | 要求 |
 |------|------|
-| 操作系统 | Windows 10/11（本期目标）。macOS 架构已预留。 |
-| Node.js | ≥ 18（推荐 20 LTS） |
-| Python | ≥ 3.10（推荐 3.11） |
+| 操作系统 | **查看/编排客户端**：Windows 10/11（本期目标）。**训练端**：Windows，或 **Linux**（Ubuntu/Debian 等服务器、云 GPU）。两种典型部署：①全在 Windows 本机；②**Linux GPU 训练 + Windows 客户端查看**（见 [第 12 节](#12-linux-服务器训练--远程连接)）。macOS 架构已预留。 |
+| Node.js | ≥ 18（推荐 20 LTS）。仅客户端需要。 |
+| Python | ≥ 3.10（推荐 3.11）。训练端需要。 |
 | GPU | **可选**。CPU 即可运行全部功能；拥有 NVIDIA GPU 时动捕推理显著加速。 |
 | 显存 | GPU 推理建议 ≥ 6GB |
 | 硬盘 | ≈ 3GB（含模型权重） |
@@ -91,6 +92,15 @@ Torch Monkey 让你可以：
 ---
 
 ## 3. 安装
+
+> 🚀 **快速路径（推荐，Win/Linux 通用）**：在仓库根目录执行
+> ```bash
+> npm run setup            # 自动建 venv、探测 GPU 装 CUDA 版 torch、下模型、跑自检
+> python python/tools/check_env.py   # 一条命令体检环境（退出码=问题数）
+> ```
+> `npm run setup` 会调用 `scripts/setup.sh`（Linux/macOS）或 `scripts/setup.ps1`（Windows）。
+> 想强制 CPU：`npm run setup -- --cpu`；指定 CUDA：`npm run setup -- --cuda 118`。
+> 下方为手动/进阶步骤。
 
 ### 3.1 前端（Electron + React + Babylon.js）
 
@@ -185,9 +195,31 @@ npm run preview
 
 ```bash
 cd python
-python server.py                       # 默认 19876 端口
+python server.py                       # 默认 127.0.0.1:19876（仅本机）
 python server.py --port 19877          # 自定义端口
+python server.py --host 0.0.0.0        # 绑所有网卡（局域网直连用，见第 12 节）
+TORCHMONKEY_HOST=0.0.0.0 python server.py   # 等价：用环境变量覆盖绑定地址
 ```
+
+> 默认绑定 `127.0.0.1`（仅回环）是出于安全考虑——配合 SSH 隧道使用最稳妥。
+> 远程训练 / 局域网直连的完整指引见 [第 12 节](#12-linux-服务器训练--远程连接)。
+
+**终端可视化 / Terminal dashboard**（在服务器本机或经 SSH 隧道在客户端观察每一步）：
+
+```bash
+python python/tools/dashboard.py                                    # 默认 http://127.0.0.1:19876
+python python/tools/dashboard.py --url http://127.0.0.1:19876       # 经隧道观察远程 GPU
+python python/tools/dashboard.py --url http://192.168.1.50:19876    # 观察局域网服务器
+# 或：npm run py:dashboard
+```
+面板会实时显示：模型就绪状态、device/CUDA/GPU 名/显存、每个任务的进度条与阶段（抽帧→2D→3D→优化→导出）。依赖 `rich`（缺失时自动降级纯文本）。
+
+**环境自检 / Environment doctor**（无需 venv，秒级）：
+
+```bash
+python python/tools/check_env.py     # 或 npm run py:check
+```
+打印 ✅/❌ 体检表（Python/ffmpeg/torch+CUDA/mediapipe/opencv/模型/GPU），退出码=问题数。
 
 接口：
 
@@ -432,6 +464,13 @@ npm run build:win     # 构建 + electron-builder 打包 Windows 安装包
 - 确认模型已下载（`python python/scripts/download_models.py`）。
 - 即便离线，舞台 / 角色 / 手动动作 / 时间线 / 特效仍可正常使用。
 
+**远程 / 端口转发连不上（"转发没到我电脑"）？**
+- **最常见的坑**：本机若装了 Python，客户端默认「本地模式」会自行启动一个 `server.py` 抢占 19876 端口，导致 SSH 隧道 `ssh -L 19876:...` 绑端口失败 / 命中本机进程。**解法**：点顶栏 ⚙ → 选「远程·SSH 隧道」或「远程·局域网」→ 填地址 →「测试连接」。切到远程模式后客户端**不再启动本机 Python**，端口让给隧道。
+- 「测试连接」一直转圈/超时：检查 SSH 隧道是否真的建立（`ssh -L 19876:127.0.0.1:19876 user@server` 后保持窗口不关）、服务器 `server.py` 是否在跑、Linux 防火墙是否放行 19876。
+- 局域网直连模式：服务器必须用 `--host 0.0.0.0`（或 `TORCHMONKEY_HOST=0.0.0.0`）启动，否则只监听回环、外部访问被拒。
+- 远程下大视频上传慢属正常；远程优先用「📺 B 站动捕」（只传 BV 号）。
+- 完整指引见 [第 12 节](#12-linux-服务器训练--远程连接)。
+
 **动捕结果不准确？**
 - 用 **60fps** 源视频捕捉快速动作；确保全身入镜、光线充足、背景简洁。
 - 确认已下载 MotionBERT 权重（缺失会退化为几何提升器，精度下降）。
@@ -458,6 +497,79 @@ npm run build:win     # 构建 + electron-builder 打包 Windows 安装包
 
 **性能（多角色卡顿）？**
 - 降低 Bloom 模糊核 / 关闭 DOF；减少同时角色数；关闭「显示骨骼」。
+
+---
+
+## 12. Linux 服务器训练 & 远程连接
+
+Torch Monkey 的 AI 动捕管线（Python/FastAPI）和桌面端（Electron）可以**分处两台机器**：在有 GPU 的 **Linux 服务器**上跑推理，在 **Windows 客户端**上查看、编排。这是受支持的一等用法，尤其适合显卡在远端（实验室/云）的场景。
+
+### 12.1 架构
+
+```
+┌─────────────────────────┐   HTTP(19876)   ┌──────────────────────────┐
+│  Windows 客户端          │ ◄────────────► │  Linux GPU 服务器         │
+│  Electron + Babylon.js   │   SSH 隧道/LAN  │  python server.py         │
+│  （查看 / 编排 / 导出）   │                 │  MediaPipe+MotionBERT+IK  │
+└─────────────────────────┘                 └──────────────────────────┘
+```
+
+> 视频文件在**客户端**读取并经 HTTP 上传到服务器推理；B 站动捕只传 BV 号，服务器自行下载。返回的 MotionData 回到客户端动作库。
+
+### 12.2 Linux 服务器端：安装并启动
+
+```bash
+# 1) 一键环境（自动建 venv、探测 GPU 装 cu121 版 torch、下模型、自检）
+cd torch-monkey
+bash scripts/setup.sh            # 或：npm run setup   （需 node）
+# 强制 CPU： bash scripts/setup.sh --cpu ；指定 CUDA： --cuda 118
+
+# 2) 体检（可选，秒级）
+python python/tools/check_env.py
+
+# 3) 终端可视化（在服务器本机观察每一步；可选）
+python python/tools/dashboard.py
+
+# 4) 启动管线（默认绑 127.0.0.1，配合 SSH 隧道）
+cd python && python server.py
+```
+
+### 12.3 Windows 客户端连接（三种模式）
+
+点顶栏右侧的 **⚙**（或状态灯旁）打开「AI 管线 / 服务器设置」，选择模式并填地址，点 **🔍 测试连接** 确认，再 **💾 保存并应用**（免重启即时生效）。顶栏会显示 `远程·cuda` 摘要。
+
+#### 模式 A — SSH 隧道（推荐，最安全）
+
+服务器端**无需**对外开端口（保持默认 `127.0.0.1`）。在 Windows 上建隧道：
+
+```powershell
+ssh -L 19876:127.0.0.1:19876 user@your-linux-server
+# 保持该窗口开着；之后 Windows 的 127.0.0.1:19876 即转发到服务器
+```
+
+设置弹窗：模式选「**远程·SSH 隧道**」，地址 `http://127.0.0.1:19876` → 测试连接应显示 `cuda · <GPU>`。
+
+#### 模式 B — 局域网直连（仅可信内网）
+
+服务器端绑定所有网卡：
+
+```bash
+python server.py --host 0.0.0.0          # 或： TORCHMONKEY_HOST=0.0.0.0 python server.py
+# 并在 Linux 防火墙放行 19876（如 sudo ufw allow 19876）
+```
+
+设置弹窗：模式选「**远程·局域网**」，地址 `http://<服务器-IP>:19876`。
+
+#### 模式 C — 本地（全在 Windows）
+
+模式选「**本地**」，填本地端口（默认 19876）。客户端自行 spawn `python/server.py`（需本机已装 Python 与依赖）。这就是第 3、4 节描述的传统用法。
+
+### 12.4 日常使用提示
+
+- **测试连接**是判断「转发是否真的落到 GPU 机器」的关键：成功会回显 `cuda · <GPU 名> · <已用>/<总>GB`，失败会给出原因（超时/端口未开等）。
+- 远程模式客户端**不再启动本机 Python**，因此不会与本机已装 Python 抢 19876 端口——这正是修复「点开后没转发到电脑」的核心。
+- 远程推理动捕：上传大视频走隧道较慢，**优先用「📺 B 站动捕」**（只传 BV 号，服务器侧下载）。
+- 想在客户端实时看服务器任务进度：Windows 上另开终端 `python python/tools/dashboard.py --url http://127.0.0.1:19876`（经同一隧道）。
 
 ---
 

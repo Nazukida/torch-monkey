@@ -58,15 +58,34 @@ python scripts/download_models.py
 ## 运行 / Run
 
 ```bash
-python server.py                 # 默认 127.0.0.1:19876
-python server.py --port 19877    # 自定义端口
+python server.py                        # 默认 127.0.0.1:19876（仅回环，配合 SSH 隧道）
+python server.py --port 19877           # 自定义端口
+python server.py --host 0.0.0.0         # 绑所有网卡（局域网直连）
+TORCHMONKEY_HOST=0.0.0.0 python server.py   # 等价：环境变量覆盖绑定地址
+```
+
+> 默认 `127.0.0.1` 是安全默认。远程训练（Linux GPU 服务器 + Windows 客户端）的完整指引见仓库根 [USAGE.md §12](../USAGE.md#12-linux-服务器训练--远程连接)。
+
+### 终端可视化 / Terminal dashboard
+
+```bash
+python tools/dashboard.py                                # 默认 http://127.0.0.1:19876
+python tools/dashboard.py --url http://127.0.0.1:19876   # 经 SSH 隧道观察远程 GPU
+```
+实时显示模型就绪、device/CUDA/GPU 显存、每任务进度与阶段。依赖 `rich`（缺失自动降级纯文本）。
+
+### 环境自检 / Environment doctor
+
+```bash
+python tools/check_env.py     # 秒级体检，退出码=问题数；无需 venv
 ```
 
 ## 接口 / Endpoints
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET  | `/api/health`             | 管线就绪状态（哪些模型已加载）。恒返回 200。 |
+| GET  | `/api/health`             | 管线就绪状态（`models`）+ `runtime`（device/CUDA/GPU 显存/torch/ffmpeg…）。恒返回 200。 |
+| GET  | `/api/tasks`              | 列出未过期任务（active+recent），供终端 dashboard 渲染。 |
 | POST | `/api/preview-video`      | 仅返回 ffprobe 元信息（multipart `file`）。不做 AI 推理。 |
 | POST | `/api/process-video`      | 完整管线。返回 `motion_data` + `stats`。 |
 | POST | `/api/preview-bilibili`   | 按 BV 号探测元信息（标题/时长/UP 主），**不下载**。JSON body。需 yt-dlp。 |

@@ -39,6 +39,9 @@ const api: ElectronAPI = {
   projectOpen: () => ipcRenderer.invoke('project:open'),
 
   pythonHealth: () => ipcRenderer.invoke('python:health'),
+  pythonGetConfig: () => ipcRenderer.invoke('python:getConfig'),
+  pythonConfigure: (cfg) => ipcRenderer.invoke('python:configure', cfg),
+  pythonTestConnection: (url) => ipcRenderer.invoke('python:testConnection', url),
   previewVideo: (filePath) => ipcRenderer.invoke('python:previewVideo', filePath),
   processVideo: (filePath, options) =>
     ipcRenderer.invoke('python:processVideo', filePath, options),

@@ -1,25 +1,51 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ViewportContainer } from './components/ViewportContainer'
 import { LeftPanel } from './components/LeftPanel'
 import { RightPanel } from './components/RightPanel'
 import { TimelineContainer } from './timeline/TimelineContainer'
 import { TopBar } from './components/TopBar'
 import { BilibiliCaptureDialog } from './components/BilibiliCaptureDialog'
+import { ServerSettingsDialog } from './components/ServerSettingsDialog'
 import { useMotionStore } from './stores/motionStore'
 import { useProjectStore } from './stores/projectStore'
 import { useCharacterStore } from './stores/characterStore'
 import { useTimelineStore } from './stores/timelineStore'
 import { bindKeyboardShortcuts } from './lib/keyboard'
 import { importVideoForCapture } from './lib/capture'
+import type { PythonHealthResult } from '@shared/types/electron'
+
+/** Compact connection summary for the top bar, e.g. "远程·cuda:0" / "本地·cpu". */
+function summarize(h: PythonHealthResult | null): string {
+  if (!h || h.status !== 'ok') return ''
+  const where = h.endpoint?.mode === 'remote' ? '远程' : '本地'
+  const rt = h.runtime
+  let dev = ''
+  if (rt?.cuda_available) dev = 'cuda'
+  else if (rt?.torch_installed) dev = 'cpu'
+  return dev ? `${where}·${dev}` : where
+}
 
 export default function App(): React.JSX.Element {
-  const [pythonStatus, setPythonStatus] = useState<'checking' | 'ok' | 'down'>('checking')
+  const [health, setHealth] = useState<PythonHealthResult | null>(null)
+  const [checking, setChecking] = useState(true)
+
+  const refreshPythonStatus = useCallback(async () => {
+    try {
+      setHealth(await window.electronAPI.pythonHealth())
+    } catch {
+      setHealth(null)
+    } finally {
+      setChecking(false)
+    }
+  }, [])
 
   useEffect(() => {
     useMotionStore.getState().loadMotionList()
-    window.electronAPI
-      .pythonHealth()
-      .then((h) => setPythonStatus(h.status === 'ok' ? 'ok' : 'down'))
+    void refreshPythonStatus()
+    // Re-probe periodically so the indicator + remote device summary stay live.
+    const poll = window.setInterval(() => {
+      void refreshPythonStatus()
+    }, 8000)
 
     // Seed a starter project if empty: one character + one character track.
     const chars = useCharacterStore.getState()
@@ -53,15 +79,22 @@ export default function App(): React.JSX.Element {
     const offKeys = bindKeyboardShortcuts()
 
     return () => {
+      window.clearInterval(poll)
       offProgress()
       offMenu()
       offKeys()
     }
-  }, [])
+  }, [refreshPythonStatus])
+
+  const pythonStatus: 'checking' | 'ok' | 'down' = checking
+    ? 'checking'
+    : health?.status === 'ok'
+      ? 'ok'
+      : 'down'
 
   return (
     <div className="flex h-screen w-screen flex-col bg-zinc-950 text-zinc-200 select-none">
-      <TopBar pythonStatus={pythonStatus} />
+      <TopBar pythonStatus={pythonStatus} pythonSummary={summarize(health)} />
       <div className="flex flex-1 min-h-0">
         <LeftPanel />
         <div className="flex flex-1 min-w-0 flex-col">
@@ -73,7 +106,7 @@ export default function App(): React.JSX.Element {
         <RightPanel />
       </div>
       <BilibiliCaptureDialog />
+      <ServerSettingsDialog onConfigured={() => void refreshPythonStatus()} />
     </div>
   )
 }
-

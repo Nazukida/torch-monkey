@@ -27,7 +27,11 @@ python tools/selftest_pipeline.py
 
 **GPU 用户**：先 `pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121`，再 `pip install -r requirements.txt`。
 
-📘 **完整文档见 [USAGE.md](./USAGE.md)**（安装、运行、功能、AI 管线与准确率、快捷键、排错）。
+🚀 **一键环境（Win/Linux 通用，自动探测 GPU 装 CUDA 版 torch）**：`npm run setup`，再用 `python python/tools/check_env.py` 体检。
+
+🖥️ **远程 GPU 训练**：训练在 Linux 服务器、查看在 Windows 客户端 —— 见 [USAGE.md §12](./USAGE.md#12-linux-服务器训练--远程连接)（SSH 隧道 / 局域网直连 / 本地三模式 + 顶栏 ⚙ 设置 + 终端 dashboard）。
+
+📘 **完整文档见 [USAGE.md](./USAGE.md)**（安装、运行、功能、AI 管线与准确率、快捷键、排错、远程训练）。
 
 ## 功能 / 機能 / Features
 

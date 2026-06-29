@@ -34,7 +34,11 @@ WORK_DIR: Path = PYTHON_ROOT / "_work"
 # ---------------------------------------------------------------------------
 # Default port. plan.md pins 19876; overridable via ``python server.py --port``.
 DEFAULT_PORT: int = 19876
-DEFAULT_HOST: str = "127.0.0.1"
+# Bind address. 127.0.0.1 (loopback only) is the safe default: pair it with an
+# SSH tunnel (``ssh -L 19876:127.0.0.1:19876 user@server``) for remote training.
+# To expose the server on the LAN instead, run ``python server.py --host 0.0.0.0``
+# or set TORCHMONKEY_HOST=0.0.0.0 (then lock down the host firewall yourself).
+DEFAULT_HOST: str = os.environ.get("TORCHMONKEY_HOST", "127.0.0.1")
 
 # Allow CORS for the Electron renderer. Origins are matched loosely (regex-ish
 # via allow_origin_regex) so dev (http://localhost:*) and prod (app://.) both work.

@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import platform
 import shutil
 import sys
 import tempfile
@@ -154,6 +155,36 @@ class ProgressBroker:
     async def get(self, task_id: str) -> Optional[Dict[str, Any]]:
         async with self._lock:
             return self._items.get(task_id)
+
+    async def snapshot(self) -> List[Dict[str, Any]]:
+        """Return all non-expired task entries for the terminal dashboard.
+
+        Each entry is a flat dict (task_id / status / progress / stage /
+        message / timestamps / age) sorted most-recently-updated first. Entries
+        past the TTL are filtered here so the "non-expired" contract holds at
+        call time (not just after the periodic GC sweep). Used by
+        ``GET /api/tasks``; safe to call frequently.
+        """
+        now = time.time()
+        async with self._lock:
+            items: List[Dict[str, Any]] = []
+            for tid, e in self._items.items():
+                if now - e.get("updatedAt", now) > self._ttl:
+                    continue
+                started = e.get("startedAt", now)
+                items.append({
+                    "task_id": tid,
+                    "status": e.get("status"),
+                    "progress": e.get("progress", 0.0),
+                    "stage": e.get("stage"),
+                    "message": e.get("message"),
+                    "error": e.get("error"),
+                    "startedAt": started,
+                    "updatedAt": e.get("updatedAt", started),
+                    "age": round(now - started, 1),
+                })
+        items.sort(key=lambda d: d.get("updatedAt") or 0, reverse=True)
+        return items
 
     async def gc(self) -> None:
         """Drop entries older than the TTL. Called periodically."""
@@ -348,6 +379,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Unexpected error while loading pipeline models.")
 
+    # Snapshot the static runtime once so /api/health doesn't re-walk PATH on
+    # every poll (the dashboard + Electron manager probe frequently). VRAM is
+    # refreshed live in the health endpoint.
+    app.state.runtime_base = _collect_runtime()
+
     gc_stop = asyncio.Event()
 
     async def _gc_loop() -> None:
@@ -444,18 +480,134 @@ def _build_video_processor(video_path: Path, target_fps: float) -> Any:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _bin_present(name_or_path: str) -> Any:
+    """Resolve an external binary to its path if findable, else False.
+
+    Accepts either an absolute path (reported verbatim if the file exists) or a
+    bare name (looked up on PATH via shutil.which). Used by the runtime probe.
+    """
+    if not name_or_path:
+        return False
+    try:
+        p = Path(name_or_path)
+        if p.is_file():
+            return str(p)
+    except Exception:
+        pass
+    return shutil.which(name_or_path) or False
+
+
+def _runtime_vram() -> Optional[tuple]:
+    """Live GPU VRAM as ``(used_mb, total_mb)`` if CUDA is available, else None.
+
+    Cheap (no PATH walk); called on every /api/health poll so the dashboard's
+    VRAM reading stays live while the rest of the runtime snapshot is cached.
+    """
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()  # bytes
+            return round((total - free) / 1048576.0, 1), round(total / 1048576.0, 1)
+    except Exception:
+        pass
+    return None
+
+
+def _collect_runtime() -> Dict[str, Any]:
+    """Best-effort snapshot of the runtime environment for ``/api/health``.
+
+    This is the headline signal that lets the desktop client's "Test
+    Connection" button (and the terminal dashboard) confirm the request really
+    landed on the GPU box: device / CUDA / GPU name / VRAM / torch version.
+
+    Every field is guarded so a missing dependency never breaks the health
+    probe — the entire point of ``/api/health`` is to report readiness, so it
+    must always return 200 with a populated object. Cached once at startup
+    (see lifespan); VRAM is refreshed live via :func:`_runtime_vram`.
+    """
+    rt: Dict[str, Any] = {
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "torch_installed": False,
+        "torch_version": None,
+        "device": "cpu",
+        "cuda_available": False,
+        "device_name": None,
+        "gpu_mem_total_mb": None,
+        "gpu_mem_used_mb": None,
+        "opencv": None,
+        "ffmpeg": _bin_present(settings.FFMPEG_BIN),
+        "ffprobe": _bin_present(settings.FFPROBE_BIN),
+        "yt_dlp": None,
+        "mediapipe": None,
+    }
+
+    # torch + CUDA — the field everyone actually reads.
+    try:
+        import torch  # type: ignore
+        rt["torch_installed"] = True
+        rt["torch_version"] = getattr(torch, "__version__", None)
+        cuda = bool(torch.cuda.is_available())
+        rt["cuda_available"] = cuda
+        rt["device"] = "cuda" if cuda else "cpu"
+        if cuda:
+            try:
+                rt["device_name"] = torch.cuda.get_device_name(0)
+            except Exception:
+                rt["device_name"] = "cuda"
+            vram = _runtime_vram()
+            if vram is not None:
+                rt["gpu_mem_used_mb"], rt["gpu_mem_total_mb"] = vram
+    except Exception:
+        pass
+
+    # opencv (video decode path)
+    try:
+        import cv2  # type: ignore
+        rt["opencv"] = getattr(cv2, "__version__", True)
+    except Exception:
+        rt["opencv"] = False
+
+    # yt-dlp (bilibili capture)
+    try:
+        import yt_dlp  # type: ignore
+        rt["yt_dlp"] = getattr(getattr(yt_dlp, "version", None), "__version__", None) or True
+    except Exception:
+        rt["yt_dlp"] = False
+
+    # mediapipe (2D estimation)
+    try:
+        import mediapipe as mp  # type: ignore
+        rt["mediapipe"] = getattr(mp, "__version__", True)
+    except Exception:
+        rt["mediapipe"] = False
+
+    return rt
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
 async def health() -> Dict[str, Any]:
     """Report pipeline readiness. Returns 200 always (even if models missing)
-    so the Electron manager can probe readiness; clients inspect ``models``."""
+    so the Electron manager can probe readiness; clients inspect ``models``.
+
+    ``runtime`` describes the host (device / CUDA / GPU / torch / ffmpeg …) so
+    a remote client can confirm its request actually reached the GPU box. The
+    static part is cached at startup (no per-poll PATH walk); VRAM is live."""
+    base = getattr(app.state, "runtime_base", None) or _collect_runtime()
+    rt: Dict[str, Any] = dict(base)
+    vram = _runtime_vram()
+    if vram is not None:
+        rt["gpu_mem_used_mb"], rt["gpu_mem_total_mb"] = vram
     return {
         "status": "ok",
         "models": runtime.health(),
+        "runtime": rt,
         "version": app.version,
         "fps": settings.DEFAULT_TARGET_FPS,
+        "host": getattr(app.state, "host", settings.DEFAULT_HOST),
         "time": time.time(),
     }
 
@@ -748,6 +900,13 @@ async def get_progress(task_id: str) -> JSONResponse:
     return JSONResponse(content={"task_id": task_id, **entry})
 
 
+@app.get("/api/tasks")
+async def list_tasks() -> JSONResponse:
+    """List non-expired pipeline tasks (active + recently finished) for the
+    terminal dashboard. Mirrors the in-process progress broker state."""
+    return JSONResponse(content={"tasks": await broker.snapshot()})
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -766,8 +925,11 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
     _configure_logging()
-    # Stash the chosen port on app.state so the lifespan log line is accurate.
+    # Stash the chosen port/host on app.state so the lifespan log line and
+    # /api/health report the actually-bound interface (not just the import-time
+    # default — matters when the user passes --host 0.0.0.0 for LAN access).
     app.state.port = args.port
+    app.state.host = args.host
     logger.info("Starting Torch Monkey AI pipeline: %s:%d", args.host, args.port)
 
     try:

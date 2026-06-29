@@ -92,6 +92,65 @@ export interface ProgressEvent {
   message?: string
 }
 
+// ---------------------------------------------------------------------------
+// Python pipeline connection (local vs. remote GPU server)
+// ---------------------------------------------------------------------------
+/** Where the AI pipeline runs: spawned locally, or reached over the network. */
+export type PythonMode = 'local' | 'remote'
+
+/** Persisted pipeline connection configuration. */
+export interface PythonConfig {
+  mode: PythonMode
+  remoteUrl: string
+  port: number
+}
+
+/** How the renderer addresses the pipeline right now. */
+export interface PythonEndpoint {
+  mode: PythonMode
+  baseUrl: string
+}
+
+/**
+ * Runtime snapshot of the box the pipeline runs on (from /api/health). The
+ * headline signal: device / CUDA / GPU name / VRAM — lets the client confirm a
+ * remote request actually landed on the GPU server. All fields optional because
+ * every probe is best-effort server-side.
+ */
+export interface PythonRuntime {
+  platform?: string
+  python?: string
+  torch_installed?: boolean
+  torch_version?: string | null
+  device?: string
+  cuda_available?: boolean
+  device_name?: string | null
+  gpu_mem_total_mb?: number | null
+  gpu_mem_used_mb?: number | null
+  opencv?: string | boolean | null
+  ffmpeg?: string | boolean | null
+  ffprobe?: string | boolean | null
+  yt_dlp?: string | boolean | null
+  mediapipe?: string | boolean | null
+}
+
+/** Result of the "Test Connection" probe in the settings dialog. */
+export interface ConnectionTestResult {
+  ok: boolean
+  latencyMs?: number
+  models?: { mediapipe: boolean; motionbert: boolean }
+  runtime?: PythonRuntime
+  error?: string
+}
+
+/** Pipeline health returned by pythonHealth / pythonConfigure. */
+export interface PythonHealthResult {
+  status: 'ok' | 'down'
+  models?: { mediapipe: boolean; motionbert: boolean }
+  runtime?: PythonRuntime
+  endpoint?: PythonEndpoint
+}
+
 export interface ElectronAPI {
   platform: NodeJS.Platform
   versions: { electron: string; node: string; chrome: string }
@@ -132,10 +191,13 @@ export interface ElectronAPI {
   projectOpen: () => Promise<{ data?: ProjectFile; error?: string; path?: string }>
 
   // ---- Python AI pipeline ----
-  pythonHealth: () => Promise<{
-    status: 'ok' | 'down'
-    models?: { mediapipe: boolean; motionbert: boolean }
-  }>
+  pythonHealth: () => Promise<PythonHealthResult>
+  /** Read the persisted pipeline connection config (mode / remoteUrl / port). */
+  pythonGetConfig: () => Promise<PythonConfig>
+  /** Switch local↔remote / change URL or port; persists and applies without restart. */
+  pythonConfigure: (cfg: Partial<PythonConfig>) => Promise<PythonHealthResult>
+  /** Probe a pipeline URL's /api/health without saving — for "Test Connection". */
+  pythonTestConnection: (url?: string) => Promise<ConnectionTestResult>
   previewVideo: (filePath: string) => Promise<{ info?: VideoInfo; error?: string }>
   processVideo: (
     filePath: string,

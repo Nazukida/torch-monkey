@@ -16,7 +16,12 @@
     "build:win": "electron-vite build && electron-builder --win",
     "py:server": "python python/server.py",
     "py:models": "python python/scripts/download_models.py",
-    "py:selftest": "python python/tools/selftest_pipeline.py"
+    "py:selftest": "python python/tools/selftest_pipeline.py",
+    "py:check": "python python/tools/check_env.py",
+    "py:dashboard": "python python/tools/dashboard.py",
+    "setup": "node scripts/setup.mjs",
+    "setup:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1",
+    "setup:linux": "bash scripts/setup.sh"
   },
   "dependencies": {
     "@babylonjs/core": "^9.0.0",
