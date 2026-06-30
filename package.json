@@ -14,6 +14,8 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "build:win": "electron-vite build && electron-builder --win",
+    "build:web": "vite build --config vite.config.web.ts",
+    "dev:web": "vite --config vite.config.web.ts",
     "py:server": "python python/server.py",
     "py:models": "python python/scripts/download_models.py",
     "py:selftest": "python python/tools/selftest_pipeline.py",

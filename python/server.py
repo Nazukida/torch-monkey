@@ -72,6 +72,13 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from config import settings  # type: ignore[no-redef]
 
+# Web-client persistence (motions / projects / settings). sqlite3-backed,
+# reuses database/schema.sql. Lazy-friendly: importing this pulls only stdlib.
+try:
+    from api.store import Store
+except ImportError:  # pragma: no cover - defensive, same path fix as above
+    from api.store import Store  # type: ignore[no-redef]
+
 logger = logging.getLogger("torch_monkey.server")
 
 # ---------------------------------------------------------------------------
@@ -358,6 +365,10 @@ class WotagestOptimizerProxy:
 # ---------------------------------------------------------------------------
 runtime = PipelineRuntime()
 broker = ProgressBroker()
+# Web-client persistent store. Instantiated in the lifespan (after dirs exist);
+# ``Optional`` because handlers may be imported in contexts that never boot the
+# lifespan (tests).
+store: Optional["Store"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +378,15 @@ broker = ProgressBroker()
 async def lifespan(app: FastAPI):
     _configure_logging()
     settings.ensure_dirs()
+    # Boot the web-client persistence store (sqlite3 under DATA_DIR). Wrapped so
+    # a schema/permission error never takes the pipeline down — the API routes
+    # that need it will simply 503.
+    global store
+    try:
+        store = Store()
+    except Exception:
+        logger.exception("Web-client store failed to initialise; persistence routes disabled.")
+        store = None
     logger.info("Torch Monkey AI pipeline starting on %s:%d",
                 settings.DEFAULT_HOST, _get_port(app))
     logger.info("Python root: %s", settings.PYTHON_ROOT)
@@ -905,6 +925,142 @@ async def list_tasks() -> JSONResponse:
     """List non-expired pipeline tasks (active + recently finished) for the
     terminal dashboard. Mirrors the in-process progress broker state."""
     return JSONResponse(content={"tasks": await broker.snapshot()})
+
+
+# ---------------------------------------------------------------------------
+# Web-client persistence (motions / projects / settings / tags / stats).
+# These back the browser shim's db* methods; they mirror the Electron
+# DatabaseHandler and return camelCase JSON matching shared/types/*. Store
+# access is serialized sqlite3 work, so each call is offloaded to a thread.
+# ---------------------------------------------------------------------------
+def _require_store() -> "Store":
+    """Return the store or raise 503 if it failed to boot."""
+    if store is None:
+        raise HTTPException(
+            status_code=503, detail="Persistence store is not available."
+        )
+    return store
+
+
+@app.get("/api/motions")
+async def list_motions(
+    search: Optional[str] = None,
+    source: Optional[str] = None,
+    tags: Optional[str] = None,        # comma-separated
+    sortBy: Optional[str] = None,       # name | created_at | intensity | updated_at
+    sortOrder: Optional[str] = None,    # asc | desc
+    limit: int = 200,
+    offset: int = 0,
+) -> JSONResponse:
+    """List motion metadata (no poses). Mirrors db:listMotions."""
+    opts: Dict[str, Any] = {
+        "search": search,
+        "source": source,
+        "tags": [t for t in (tags or "").split(",") if t] if tags else None,
+        "sortBy": sortBy,
+        "sortOrder": sortOrder,
+        "limit": limit,
+        "offset": offset,
+    }
+    motions, total = await asyncio.to_thread(_require_store().list_motions, opts)
+    return JSONResponse(content={"motions": motions, "total": total})
+
+
+@app.get("/api/motions/{motion_id}")
+async def get_motion(motion_id: str) -> JSONResponse:
+    """Return a full MotionData (with poses), or 404."""
+    motion = await asyncio.to_thread(_require_store().get_motion, motion_id)
+    if motion is None:
+        raise HTTPException(status_code=404, detail=f"Unknown motion: {motion_id}")
+    return JSONResponse(content=motion)
+
+
+@app.post("/api/motions")
+async def create_motion(payload: Dict[str, Any]) -> JSONResponse:
+    """Create/replace a motion (full MotionData body). Mirrors db:createMotion."""
+    await asyncio.to_thread(_require_store().create_motion, payload)
+    return JSONResponse(content={"ok": True})
+
+
+@app.patch("/api/motions/{motion_id}")
+async def update_motion(motion_id: str, payload: Dict[str, Any]) -> JSONResponse:
+    """Partial update of editable motion fields. Mirrors db:updateMotion."""
+    await asyncio.to_thread(_require_store().update_motion, motion_id, payload)
+    return JSONResponse(content={"ok": True})
+
+
+@app.delete("/api/motions/{motion_id}")
+async def delete_motion(motion_id: str) -> JSONResponse:
+    await asyncio.to_thread(_require_store().delete_motion, motion_id)
+    return JSONResponse(content={"ok": True})
+
+
+@app.get("/api/tags")
+async def popular_tags(limit: int = 20) -> JSONResponse:
+    return JSONResponse(content={"tags": await asyncio.to_thread(_require_store().popular_tags, limit)})
+
+
+@app.get("/api/projects")
+async def list_projects() -> JSONResponse:
+    return JSONResponse(content={"projects": await asyncio.to_thread(_require_store().list_projects)})
+
+
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str) -> JSONResponse:
+    project = await asyncio.to_thread(_require_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Unknown project: {project_id}")
+    return JSONResponse(content=project)
+
+
+@app.post("/api/projects")
+async def save_project(payload: Dict[str, Any]) -> JSONResponse:
+    project_id = await asyncio.to_thread(_require_store().save_project, payload)
+    return JSONResponse(content={"ok": True, "id": project_id})
+
+
+@app.get("/api/settings/{key}")
+async def get_setting(key: str) -> JSONResponse:
+    value = await asyncio.to_thread(_require_store().get_setting, key)
+    return JSONResponse(content={"key": key, "value": value})
+
+
+@app.put("/api/settings/{key}")
+async def set_setting(key: str, payload: Dict[str, Any]) -> JSONResponse:
+    # Body shape: {"value": "<json-encoded string>"} to match the desktop kv store.
+    value = payload.get("value") if isinstance(payload, dict) else None
+    if value is None:
+        raise HTTPException(status_code=400, detail="body must be {\"value\": ...}")
+    await asyncio.to_thread(_require_store().set_setting, key, str(value))
+    return JSONResponse(content={"ok": True})
+
+
+@app.get("/api/stats")
+async def stats() -> JSONResponse:
+    return JSONResponse(content=await asyncio.to_thread(_require_store().stats))
+
+
+# ---------------------------------------------------------------------------
+# Static web client. The browser build (npm run build:web → python/web_dist/)
+# is served at "/" so the app and the API share one origin (no CORS). Mounted
+# LAST so every /api/* route above takes precedence. When the build is absent
+# the server stays a headless pipeline and a small landing page explains it.
+# ---------------------------------------------------------------------------
+if settings.WEB_DIST_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles  # local import; only when needed
+
+    app.mount("/", StaticFiles(directory=str(settings.WEB_DIST_DIR), html=True), name="web")
+else:
+    @app.get("/")
+    async def _web_landing() -> JSONResponse:
+        return JSONResponse(content={
+            "name": "Torch Monkey AI Pipeline",
+            "status": "ok",
+            "webClient": (
+                f"not built — run `npm run build:web` then serve {settings.WEB_DIST_DIR}"
+            ),
+            "api": ["/api/health", "/api/motions", "/api/process-video", "/api/process-bilibili"],
+        })
 
 
 # ---------------------------------------------------------------------------

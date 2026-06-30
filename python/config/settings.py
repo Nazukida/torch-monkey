@@ -29,6 +29,19 @@ MODELS_DIR: Path = PYTHON_ROOT / "models"
 # Scratch space for per-task temp files (uploaded videos, extracted frames).
 WORK_DIR: Path = PYTHON_ROOT / "_work"
 
+# Durable storage for the web client (motions / projects / settings SQLite DB).
+# Mirrors what the Electron desktop app keeps under its userData dir, so the
+# browser client has the same persistence. Created at startup.
+DATA_DIR: Path = Path(os.environ.get(
+    "TORCHMONKEY_DATA_DIR", str(PYTHON_ROOT / "data")))
+
+# Built browser assets (output of `npm run build:web`). Served at "/" by the
+# FastAPI server so the web client and the API share one origin (no CORS). When
+# this dir is absent (web build not produced yet) the server simply has no UI
+# and behaves as the headless pipeline it always was.
+WEB_DIST_DIR: Path = Path(os.environ.get(
+    "TORCHMONKEY_WEB_DIST", str(PYTHON_ROOT / "web_dist")))
+
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
@@ -144,7 +157,7 @@ def ensure_dirs() -> None:
 
     Called once at server startup. Safe to call repeatedly.
     """
-    for d in (MODELS_DIR, WORK_DIR):
+    for d in (MODELS_DIR, WORK_DIR, DATA_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

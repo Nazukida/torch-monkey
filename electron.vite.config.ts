@@ -2,11 +2,12 @@ import { resolve } from 'path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { rendererAliases } from './vite.shared'
 
 // Shared alias so both the main/preload (node) and renderer (web) TS can import
 // the cross-cutting contracts under `shared/` with the same path.
 const sharedAlias = {
-  '@shared': resolve(__dirname, 'shared')
+  '@shared': rendererAliases['@shared']
 }
 
 export default defineConfig({
@@ -33,7 +34,7 @@ export default defineConfig({
     resolve: {
       alias: {
         ...sharedAlias,
-        '@renderer': resolve(__dirname, 'src/renderer/src')
+        '@renderer': rendererAliases['@renderer']
       }
     },
     build: {

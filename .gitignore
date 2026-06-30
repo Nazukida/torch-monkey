@@ -5,6 +5,7 @@ node_modules/
 out/
 dist/
 release/
+python/web_dist/
 
 # Python
 __pycache__/
@@ -39,3 +40,4 @@ autosave.tmonkey
 # Temp / exports
 tmp/
 exports/
+python/_work/

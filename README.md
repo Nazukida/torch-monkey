@@ -1,49 +1,72 @@
 # torch-monkey
 
-> 🔥 Wota-艺（ヲタ芸）3D 编排与可视化软件 · A wotagei 3D choreography & visualization tool based on 3D reconstruction and rendering.
+> 🔥 Wota-艺（ヲタ芸）3D 编排与可视化软件 · 把表演视频变成 3D 动作，在舞台上编排、预览。
 
-- 基于3D重建以及渲染，为解决想看到标准效果的编排而诞生的wota艺软件。
-- Based on 3D reconstruction and rendering, the wotagei software was developed to address the issue of arranging content to achieve the desired standard effect.
-- 3D再構築およびレンダリングを基に、標準的な効果を確認したい編成のため生まれたヲタ芸ソフトウェア。
+基于 3D 重建与渲染，为"想看到标准效果"的 Wota-艺编排而生。AI 动作捕捉（重建）可以跑在有 GPU 的 Linux 服务器上加速，**查看/编排可以用 Windows 桌面 App，也可以直接用浏览器**。
 
-## 快速开始 / Quick Start
+📘 **完整文档见 [USAGE.md](./USAGE.md)**（两种查看端怎么选、Linux 服务器从零搭建、连接两台电脑、排错、原理）。
 
-桌面端：Electron + React 19 + Babylon.js 9；AI 动捕管线：Python + FastAPI + MediaPipe + MotionBERT。
+---
+
+## 两种查看端，任选其一
+
+| 方式 | 适合 | 一句话 |
+|---|---|---|
+| **桌面 App**（Electron + React + Babylon.js） | Windows，功能最全 | `npm install && npm run dev` |
+| **浏览器**（同一个界面，开网页即看） | 远端 GPU 场景、不想在 Windows 装东西 | `npm run build:web` 后开 `http://<服务器>:19876/` |
+
+> 两种查看端连的是**同一个 Python AI 服务器**（`python/server.py`，默认端口 19876）。AI 管线：Python + FastAPI + MediaPipe + MotionBERT。
+
+---
+
+## 快速开始
+
+### A. 桌面 App（Windows）
 
 ```bash
-# 1) 前端
 npm install
-npm run dev            # 开发模式（含自动拉起 Python 管线）
-
-# 2) Python AI 管线（另开终端）
-cd python
-python -m venv .venv && .venv\Scripts\activate    # Windows
-pip install -r requirements.txt                   # GPU 用户先装 CUDA 版 torch，见下
-python scripts/download_models.py                 # 下载 MediaPipe + MotionBERT 权重
-
-# 3) 准确率自检（无需 GPU/模型，CPU 数秒完成）
-python tools/selftest_pipeline.py
+npm run dev            # 开发模式（本地模式会自动拉起 Python 管线）
 ```
 
-**GPU 用户**：先 `pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121`，再 `pip install -r requirements.txt`。
+想连远端 GPU：启动后在顶栏 ⚙ 里切"远程·SSH 隧道"或"远程·局域网"。详见 [USAGE §3](./USAGE.md#3-把两台电脑连起来ssh-隧道--局域网--测试连接)。
 
-🚀 **一键环境（Win/Linux 通用，自动探测 GPU 装 CUDA 版 torch）**：`npm run setup`，再用 `python python/tools/check_env.py` 体检。
+### B. 浏览器（任意系统）
 
-🖥️ **远程 GPU 训练**：训练在 Linux 服务器、查看在 Windows 客户端 —— 见 [USAGE.md §12](./USAGE.md#12-linux-服务器训练--远程连接)（SSH 隧道 / 局域网直连 / 本地三模式 + 顶栏 ⚙ 设置 + 终端 dashboard）。
+```bash
+npm run build:web      # 构建网页端 → python/web_dist/
+python python/server.py
+# 浏览器打开 http://127.0.0.1:19876/
+```
 
-📘 **完整文档见 [USAGE.md](./USAGE.md)**（安装、运行、功能、AI 管线与准确率、快捷键、排错、远程训练）。
+> ⚠️ 首次必须先跑 `npm run build:web`，否则打开页面只会看到一段说明性 JSON（网页还没构建）。
 
-## 功能 / 機能 / Features
+远端 GPU：服务器在 Linux，Windows 上 `ssh -L 19876:127.0.0.1:19876 user@server`，浏览器同样开 `http://127.0.0.1:19876/`。详见 [USAGE §4.2](./USAGE.md#42-浏览器开网页即看推荐远端场景)。
 
-- 🎬 自定义 3D 暗舞台（ステージ / stage）+ 聚光灯（スポットライト / spotlight）+ 轨道摄像机（カメラ / camera）
-- 🧍 多角色程序化人形（SMPL-24 骨架 / スケルトン / skeleton）+ 自定义 `.glb` 重定向（リターゲット / retarget）
-- 🎥 视频动捕（モーションキャプチャ / motion capture）：视频 → 2D → 3D → **位置转旋转 IK** → 打艺特化优化（卡点（キメ / kime）检测 / 零过渡刹车 / 受保护平滑）
-- 📺 **B 站动捕（BV 号 / Bilibili）**：给一个 BV 号，自动用 `yt-dlp` 下载并送入动捕管线（详见 [USAGE.md §6.7](./USAGE.md#67-b-站动捕bilibili-bv-号)）
-- 🎚 多轨道时间线（タイムライン / timeline）+ 音频波形 + 节拍（ビート / beat）标记 + 拖拽编排
-- ✨ 荧光棒（サイリウム / cyalume）光轨（トレイル / trail）+ 速度自适应残影 + Bloom 暗环境 + 卡点特效
-- 💾 `.tmonkey` 工程持久化 + glTF / BVH 导出（エクスポート / export）
+### Python AI 管线（服务器侧，两种查看端都需要）
 
-> 关键名词三语对照见 [USAGE.md 术语表](./USAGE.md#术语对照表--glossary)。
+```bash
+bash scripts/setup.sh                # 一键：建 venv、探测 GPU 装 CUDA 版 torch、下模型、自检（Win: npm run setup）
+python python/tools/check_env.py     # 体检（退出码=问题数）
+python python/server.py              # 起 AI 服务（:19876）
+```
+
+**GPU 用户**：`setup.sh` 会自动探测 `nvidia-smi` 装 CUDA 版 torch；手动则先 `pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121`，再 `pip install -r python/requirements.txt`。
+
+🖥️ **远程 GPU 重建**：重建（AI 算动作）在 Linux 服务器、查看/编排在 Windows —— 见 [USAGE §1–§3](./USAGE.md#1-两台电脑怎么分工心智模型)。
+
+---
+
+## 功能
+
+- 🎬 自定义 3D 暗舞台 + 聚光灯 + 轨道摄像机
+- 🧍 多角色程序化人形（SMPL-24 骨架）+ 自定义 `.glb` 重定向
+- 🎥 视频动捕：视频 → 2D → 3D → **位置转旋转 IK** → 打艺特化优化（卡点检测 / 零过渡刹车 / 受保护平滑）
+- 📺 **B 站动捕**：给一个 BV 号，自动下载并送入管线（[USAGE §5.7](./USAGE.md#57-b-站动捕bilibili-bv-号)）
+- 🎚 多轨道时间线 + 音频波形 + 节拍标记 + 拖拽编排
+- ✨ 荧光棒光轨 + 速度自适应残影 + Bloom 暗环境 + 卡点特效
+- 💾 `.tmonkey` 工程持久化 + glTF / BVH 导出
+
+> 关键名词三语对照见 [USAGE 术语表](./USAGE.md#72-术语对照表)。
 
 ## 许可 / License
 
