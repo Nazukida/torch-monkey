@@ -53,7 +53,10 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from lib.blazepose_to_h36m import map_blazepose33_to_h36m17
+from lib.blazepose_to_h36m import (
+    map_blazepose33_to_h36m17,
+    compute_visibility,
+)
 from lib.expand_joints import expand_h36m17_to_smpl24_mm
 
 log = logging.getLogger(__name__)
@@ -63,6 +66,52 @@ __all__ = ["MotionBERTEstimator", "GeometricLifter"]
 # MotionBERT uses 243-frame temporal windows with 50% overlap.
 WINDOW = 243
 STRIDE = WINDOW // 2  # 121
+
+
+# ---------------------------------------------------------------------------
+# Official MotionBERT input normalization (crop_scale) + output rescale.
+# ---------------------------------------------------------------------------
+def _crop_scale(motion: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    """Faithful port of MotionBERT's ``crop_scale`` (utils_data.py).
+
+    Maps the pose bounding box (over all frames/joints with non-zero
+    confidence) into ``[-1, 1]`` preserving aspect ratio, and keeps the
+    confidence channel untouched. This is the exact input distribution the
+    released DSTformer was trained on, so feeding it is essential for the
+    learned weights to produce sane 3D.
+
+    Parameters
+    ----------
+    motion : np.ndarray
+        ``(T, 17, 3)`` — ``(x, y, confidence)``. x, y in image-normalized
+        ``[0, 1]`` (BlazePose space) or pixels; scale-invariant either way.
+
+    Returns
+    -------
+    np.ndarray
+        ``(T, 17, 3)`` normalized to ``[-1, 1]`` (x, y), confidence preserved.
+    """
+    result = motion.copy()
+    valid = motion[motion[..., 2] > 0][:, :2]
+    if valid.shape[0] < 4:
+        return np.zeros_like(motion)
+    xmin, xmax = float(valid[:, 0].min()), float(valid[:, 0].max())
+    ymin, ymax = float(valid[:, 1].min()), float(valid[:, 1].max())
+    scale = max(xmax - xmin, ymax - ymin)
+    if scale < eps:
+        return np.zeros_like(motion)
+    xs = (xmin + xmax - scale) / 2.0
+    ys = (ymin + ymax - scale) / 2.0
+    result[..., :2] = (motion[..., :2] - np.array([xs, ys], dtype=motion.dtype)) / scale
+    result[..., :2] = (result[..., :2] - 0.5) * 2.0
+    result[..., :2] = np.clip(result[..., :2], -1.0, 1.0)
+    result[..., 2] = motion[..., 2]
+    return result.astype(np.float32)
+
+
+# MotionBERT H36M output is root-relative in a normalized space where the full
+# body spans ~2 units (roughly [-1, 1]). Scale so an adult is ~1.7 m tall.
+MOTIONBERT_OUTPUT_SCALE_M = 0.85
 
 # Approximate adult skeleton scale. MotionBERT was trained on Human3.6M where
 # the root->thorax distance is ~0.5m for an average subject. We use a fixed
@@ -266,15 +315,15 @@ class MotionBERTEstimator:
         if model_path:
             candidates.append(model_path)
         if model_dir:
-            candidates.append(os.path.join(model_dir, "mb3d_lite.tar"))
+            candidates.append(os.path.join(model_dir, "mb3d.pth"))
+            candidates.append(os.path.join(model_dir, "motionbert_lite.pth"))
             candidates.append(os.path.join(model_dir, "motionbert_lite.ckpt"))
-            candidates.append(os.path.join(model_dir, "mb3d_lite_ft_3d.pth"))
         candidates += [
-            "models/mb3d_lite.tar",
-            "python/models/mb3d_lite.tar",
-            "models/motionbert_lite.ckpt",
-            "pretrained/mb3d_lite.tar",
-            "python/pretrained/mb3d_lite.tar",
+            "models/mb3d.pth",
+            "python/models/mb3d.pth",
+            "models/motionbert_lite.pth",
+            "pretrained/mb3d.pth",
+            "python/pretrained/mb3d.pth",
         ]
         for c in candidates:
             if c and os.path.isfile(c):
@@ -301,16 +350,27 @@ class MotionBERTEstimator:
             return
 
         try:
-            from lib.motionbert_model import load_pretrained
-            self._model = load_pretrained(resolved_path, device=self._device)
-            self._weights_loaded = getattr(self._model, "_weights_loaded", True)
+            from lib.dstformer_model import load_dstformer
+            self._model = load_dstformer(resolved_path, device=self._device)
+            report = getattr(self._model, "_load_report", {})
+            # Only trust the learned lifter when the weights actually mapped in
+            # bulk — a near-empty match means the checkpoint didn't fit and we
+            # are better off with the geometric fallback than a random net.
+            matched = report.get("matched", 0)
+            total = report.get("total_ckpt_keys", 1) or 1
+            self._weights_loaded = matched > 0 and (matched / total) >= 0.9
             if self.use_half and self._device.startswith("cuda") and self._torch:
                 try:
                     self._model = self._model.half()
                 except Exception:
                     pass
-            log.info("MotionBERT 3D model ready on %s (weights_loaded=%s).",
-                     self._device, self._weights_loaded)
+            log.info("MotionBERT DSTformer ready on %s (weights_loaded=%s, "
+                     "matched=%d/%d).", self._device, self._weights_loaded,
+                     matched, total)
+            if not self._weights_loaded:
+                log.warning("DSTformer weights matched only %d/%d keys; using "
+                            "geometric lifter instead.", matched, total)
+                self._model = None
         except Exception as exc:
             log.warning("Failed to load MotionBERT weights from %s (%s); "
                         "falling back to geometric lifter.", resolved_path, exc)
@@ -363,19 +423,27 @@ class MotionBERTEstimator:
         # 1) BlazePose 33 -> H36M 17 (2D)
         h36m_2d = map_blazepose33_to_h36m17(kp)  # (T, 17, 2)
 
-        # 2) normalize
-        h36m_2d_norm, root_xy, scale = _normalize_2d(h36m_2d)
-
-        # 3) 3D lift (windowed MotionBERT or geometric fallback)
         if self.has_motionbert and self._torch is not None:
-            h36m_3d_norm = self._infer_motionbert(h36m_2d_norm)  # (T,17,3)
+            # --- Learned DSTformer path (official normalization) ------------
+            # Build the 3-channel (x, y, confidence) input the release expects.
+            vis = compute_visibility(kp)                      # (T, 17)
+            motion = np.concatenate(
+                [h36m_2d, vis[..., None]], axis=-1
+            ).astype(np.float32)                              # (T, 17, 3)
+            motion_norm = _crop_scale(motion)                 # (T,17,3) in [-1,1]
+            h36m_3d = self._infer_motionbert(motion_norm)     # (T,17,3) root-rel
+            # DSTformer output is a normalized, root-relative 3D pose; scale to
+            # meters. expand_joints wants millimetres.
+            h36m_3d_m = h36m_3d * MOTIONBERT_OUTPUT_SCALE_M
         else:
-            h36m_3d_norm = self._lifter.lift(h36m_2d_norm)        # (T,17,3)
+            # --- Geometric fallback (bone-length normalization) -------------
+            h36m_2d_norm, root_xy, scale = _normalize_2d(h36m_2d)
+            h36m_3d_norm = self._lifter.lift(h36m_2d_norm)    # (T,17,3)
+            h36m_3d_m = _denormalize_3d(
+                h36m_3d_norm, scale, self.skeleton_scale_m
+            )
 
-        # 4) denormalize to meters (root-relative)
-        h36m_3d_m = _denormalize_3d(h36m_3d_norm, scale, self.skeleton_scale_m)
-
-        # 5) H36M-17 -> SMPL-24 (expand_joints expects mm input -> m output)
+        # H36M-17 -> SMPL-24 (expand_joints expects mm input -> m output)
         smpl24 = expand_h36m17_to_smpl24_mm(h36m_3d_m * 1000.0)   # (T,24,3)
         return smpl24.astype(np.float32, copy=False)
 

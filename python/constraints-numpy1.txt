@@ -1,0 +1,11 @@
+# Pin transitive deps that would otherwise force numpy>=2 and send pip into a
+# 64MB-per-version jaxlib backtrack loop on Python 3.11.
+#
+# mediapipe declares an unpinned `jax`/`jaxlib` dependency. The newest jax
+# (0.10.x) requires numpy>=2, which conflicts with our pinned numpy==1.26.4
+# (kept <2.0 for mediapipe/torch ABI stability). The 0.4.x line is the last
+# numpy-1.x-compatible jax series. We never call jax ourselves — it only comes
+# in as a mediapipe dep — so pinning it low is side-effect free and just stops
+# the resolver from downloading a dozen incompatible jaxlib wheels.
+jax==0.4.30
+jaxlib==0.4.30
