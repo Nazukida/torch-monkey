@@ -56,8 +56,9 @@ MEDIAPIPE_URLS = [
 ]
 
 # MotionBERT 3D-lifting checkpoint. The canonical release is Walter0807/MotionBERT
-# on Hugging Face (MIT license). The 'mb3d.pth' file is the pose-lifting model
-# trained on Human3.6M (input: 2D 17-joint, output: 3D 17-joint).
+# on Hugging Face (MIT license). The checkpoint is the full DSTformer (att_fuse)
+# pose-lifting model trained on Human3.6M (input: 2D+conf 17-joint, output: 3D).
+# Loader: lib.dstformer_model.load_dstformer
 # Reference: https://github.com/Walter0807/MotionBERT
 #            https://huggingface.co/Walter0807/MotionBERT
 MOTIONBERT_URLS = [
