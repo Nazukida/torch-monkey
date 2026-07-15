@@ -10,6 +10,7 @@ import { usePlaybackStore } from '@renderer/stores/playbackStore'
 import { useVfxStore } from '@renderer/stores/vfxStore'
 import { useMotionStore } from '@renderer/stores/motionStore'
 import type { MotionData } from '@shared/types/motion'
+import type { GlowstickConfig } from '@shared/types/vfx'
 import type { MotionPlayer } from '@renderer/character/MotionPlayer'
 
 /**
@@ -28,8 +29,34 @@ class SceneControllerImpl {
   private motionCache = new Map<string, MotionData>()
   private lastKimeFrame = -1
   private started = false
+  /** Last-applied glowstick config ref — skips applyGlowConfig when unchanged. */
+  private lastGlow: GlowstickConfig | null = null
+  /**
+   * Idempotent init + ref-counted teardown. React 19 StrictMode double-invokes
+   * effects (setup1 → cleanup1 → setup2) in dev, so a naive "init on mount /
+   * dispose on cleanup" singleton tears itself down during cleanup1 and leaves
+   * the second mount pointing at a disposed scene — every panel edit then looks
+   * dead. We (a) run the real init exactly once (initPromise guards re-entry)
+   * and (b) ref-count owners with a deferred teardown: release() only *schedules*
+   * a dispose, and a subsequent init() cancels it, so StrictMode's immediate
+   * remount keeps the scene alive while a true unmount still tears it down.
+   */
+  private initPromise: Promise<void> | null = null
+  private owners = 0
+  private disposeTimer: ReturnType<typeof setTimeout> | null = null
 
-  async init(canvas: HTMLCanvasElement): Promise<void> {
+  init(canvas: HTMLCanvasElement): Promise<void> {
+    this.owners++
+    if (this.disposeTimer) {
+      clearTimeout(this.disposeTimer)
+      this.disposeTimer = null
+    }
+    if (this.initPromise) return this.initPromise
+    this.initPromise = this.doInit(canvas)
+    return this.initPromise
+  }
+
+  private async doInit(canvas: HTMLCanvasElement): Promise<void> {
     await BabylonEngine.initialize(canvas)
     const scene = BabylonEngine.scene
 
@@ -71,7 +98,15 @@ class SceneControllerImpl {
     this.unsubs.push(
       useVfxStore.subscribe((s) => {
         this.post?.applyConfig(s.config.postProcess)
-        this.vfx?.setTrailEnabled(s.config.glowstick.trail)
+        const glow = s.config.glowstick
+        this.vfx?.setTrailEnabled(glow.trail)
+        // Push the rest of the glowstick config (enabled/doubleWield/colors/
+        // intensity/light) onto the scene — only when the glow ref actually
+        // changed, so post-process slider drags don't re-apply glowsticks.
+        if (glow !== this.lastGlow) {
+          this.lastGlow = glow
+          this.vfx?.applyGlowConfig(glow, useCharacterStore.getState().models.entries())
+        }
       })
     )
   }
@@ -144,7 +179,26 @@ class SceneControllerImpl {
     this.motionCache.delete(motionId)
   }
 
+  /**
+   * Release one owner. The scene is torn down only when the last owner is gone
+   * AND no new init() arrives before the deferred teardown fires — which is what
+   * keeps the scene alive across StrictMode's setup→cleanup→setup sequence.
+   */
+  release(): void {
+    this.owners = Math.max(0, this.owners - 1)
+    if (this.owners === 0 && this.initPromise && !this.disposeTimer) {
+      this.disposeTimer = setTimeout(() => {
+        this.disposeTimer = null
+        this.dispose()
+      }, 0)
+    }
+  }
+
   dispose(): void {
+    if (this.disposeTimer) {
+      clearTimeout(this.disposeTimer)
+      this.disposeTimer = null
+    }
     this.disposeEngineCb?.()
     this.disposeEngineCb = null
     this.unsubs.forEach((u) => u())
@@ -155,6 +209,8 @@ class SceneControllerImpl {
     this.post?.dispose()
     BabylonEngine.dispose()
     this.started = false
+    this.initPromise = null
+    this.owners = 0
   }
 }
 

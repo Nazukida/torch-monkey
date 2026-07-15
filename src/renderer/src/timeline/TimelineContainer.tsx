@@ -2,11 +2,12 @@ import { useRef, useState } from 'react'
 import { TransportBar } from './TransportBar'
 import { useTimelineStore } from '@renderer/stores/timelineStore'
 import { usePlaybackStore } from '@renderer/stores/playbackStore'
-import { useCharacterStore } from '@renderer/stores/characterStore'
+import { useUiStore } from '@renderer/stores/uiStore'
 import type { TimelineClip, TimelineTrack } from '@shared/types/timeline'
 
 const LANE_HEIGHT = 44
 const GUTTER_WIDTH = 140
+const MOTION_MIME = 'application/x-torchmonkey-motion'
 
 interface DroppedMotionPayload {
   motionId: string
@@ -16,18 +17,65 @@ interface DroppedMotionPayload {
   fps: number
 }
 
+/** Map a pointer client X to a timeline time (seconds) using the element's own
+ *  left edge — works for both the ruler and the lane body since each already
+ *  starts at the post-gutter origin. */
+function seekToX(clientX: number, el: Element, pps: number, duration: number): void {
+  const rect = el.getBoundingClientRect()
+  const t = Math.max(0, Math.min((clientX - rect.left) / pps, duration))
+  usePlaybackStore.getState().seek(t, duration)
+}
+
 export function TimelineContainer(): React.JSX.Element {
   const tracks = useTimelineStore((s) => s.tracks)
   const duration = useTimelineStore((s) => s.duration)
   const currentTime = usePlaybackStore((s) => s.currentTime)
   const [pps, setPps] = useState(40)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
+  const [panelHeight, setPanelHeight] = useState(256)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const totalWidth = Math.max(800, duration * pps + 100)
 
+  // ---- Panel height resize (top edge) ----
+  const resizeDrag = useRef<null | { startY: number; startH: number }>(null)
+  const onResizeDown = (e: React.PointerEvent): void => {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    resizeDrag.current = { startY: e.clientY, startH: panelHeight }
+  }
+  const onResizeMove = (e: React.PointerEvent): void => {
+    if (!resizeDrag.current) return
+    const dy = e.clientY - resizeDrag.current.startY
+    // Dragging the top edge UP (dy<0) grows the panel.
+    const next = Math.max(
+      140,
+      Math.min(resizeDrag.current.startH - dy, Math.round(window.innerHeight * 0.85))
+    )
+    setPanelHeight(next)
+  }
+  const onResizeUp = (e: React.PointerEvent): void => {
+    if (resizeDrag.current) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+      } catch {
+        /* already released */
+      }
+      resizeDrag.current = null
+    }
+  }
+
   return (
-    <div className="flex h-64 flex-col border-t border-zinc-800 bg-zinc-900/70">
+    <div
+      className="flex flex-col border-t border-zinc-800 bg-zinc-900/70"
+      style={{ height: panelHeight }}
+    >
+      <div
+        className="h-1 w-full shrink-0 cursor-rows-resize bg-zinc-800 hover:bg-blue-500"
+        title="拖动调整时间线高度"
+        onPointerDown={onResizeDown}
+        onPointerMove={onResizeMove}
+        onPointerUp={onResizeUp}
+      />
       <TransportBar />
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-1 text-xs text-zinc-400">
         <span>缩放</span>
@@ -61,6 +109,7 @@ export function TimelineContainer(): React.JSX.Element {
               track={track}
               pps={pps}
               width={totalWidth}
+              duration={duration}
               selectedClipId={selectedClipId}
               onSelectClip={setSelectedClipId}
             />
@@ -81,6 +130,12 @@ function Ruler({
   pps: number
   currentTime: number
 }): React.JSX.Element {
+  const scrubbing = useRef(false)
+
+  // The ruler element is already offset by marginLeft = GUTTER_WIDTH, so its
+  // internal coordinate origin is the post-gutter edge: a tick at second `s`
+  // sits at left = s*pps (NOT GUTTER + s*pps — that double-offset was the old
+  // bug that left the labels + playhead 140px to the right of the clips).
   const ticks: React.JSX.Element[] = []
   const step = pps < 25 ? 5 : pps < 60 ? 2 : 1
   for (let s = 0; s <= duration; s += step) {
@@ -88,19 +143,41 @@ function Ruler({
       <div
         key={s}
         className="absolute top-0 flex h-full flex-col justify-end text-[10px] text-zinc-500"
-        style={{ left: GUTTER_WIDTH + s * pps }}
+        style={{ left: s * pps }}
       >
         <span className="ml-1">{s}s</span>
       </div>
     )
   }
+
+  const onDown = (e: React.PointerEvent): void => {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    scrubbing.current = true
+    seekToX(e.clientX, e.currentTarget, pps, duration)
+  }
+  const onMove = (e: React.PointerEvent): void => {
+    if (!scrubbing.current) return
+    seekToX(e.clientX, e.currentTarget, pps, duration)
+  }
+  const onUp = (e: React.PointerEvent): void => {
+    scrubbing.current = false
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
+  }
+
   return (
     <div
-      className="relative border-b border-zinc-800 bg-zinc-900"
-      style={{ height: 18, marginLeft: GUTTER_WIDTH }}
+      className="relative cursor-pointer border-b border-zinc-800 bg-zinc-900"
+      style={{ height: 18, marginLeft: GUTTER_WIDTH, touchAction: 'none' }}
+      onPointerDown={onDown}
+      onPointerMove={onMove}
+      onPointerUp={onUp}
     >
       {ticks}
-      <Playhead left={GUTTER_WIDTH + currentTime * pps} />
+      <Playhead left={currentTime * pps} />
     </div>
   )
 }
@@ -120,18 +197,53 @@ function TrackLane({
   track,
   pps,
   width,
+  duration,
   selectedClipId,
   onSelectClip
 }: {
   track: TimelineTrack
   pps: number
   width: number
+  duration: number
   selectedClipId: string | null
   onSelectClip: (id: string | null) => void
 }): React.JSX.Element {
-  const onDrop = (e: React.DragEvent): void => {
+  const motionDragActive = useUiStore((s) => s.motionDragActive)
+  const canDropMotion = track.type === 'character' && !track.locked
+  const [dragDepth, setDragDepth] = useState(0)
+  const [caretX, setCaretX] = useState<number | null>(null)
+  const isHover = dragDepth > 0
+  const scrubbing = useRef(false)
+
+  const accepts = (e: React.DragEvent): boolean =>
+    canDropMotion && Array.from(e.dataTransfer.types).includes(MOTION_MIME)
+
+  const onDragEnter = (e: React.DragEvent): void => {
+    if (!accepts(e)) return // leave the native no-drop cursor on ineligible lanes
     e.preventDefault()
-    const raw = e.dataTransfer.getData('application/x-torchmonkey-motion')
+    setDragDepth((d) => d + 1)
+  }
+  const onDragOver = (e: React.DragEvent): void => {
+    if (!accepts(e)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setCaretX(Math.max(0, e.clientX - rect.left))
+  }
+  const onDragLeave = (): void => {
+    setDragDepth((d) => {
+      const next = Math.max(0, d - 1)
+      if (next === 0) setCaretX(null)
+      return next
+    })
+  }
+  const onDrop = (e: React.DragEvent): void => {
+    setDragDepth(0)
+    setCaretX(null)
+    useUiStore.getState().setMotionDragActive(false)
+    if (!accepts(e)) return
+    e.preventDefault()
+    const raw = e.dataTransfer.getData(MOTION_MIME)
     if (!raw) return
     const payload = JSON.parse(raw) as DroppedMotionPayload
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
@@ -148,6 +260,34 @@ function TrackLane({
         payload.fps
       )
   }
+
+  // Click/drag on empty lane → scrub the playhead.
+  const onPointerDown = (e: React.PointerEvent): void => {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    scrubbing.current = true
+    seekToX(e.clientX, e.currentTarget, pps, duration)
+  }
+  const onPointerMove = (e: React.PointerEvent): void => {
+    if (!scrubbing.current) return
+    seekToX(e.clientX, e.currentTarget, pps, duration)
+  }
+  const onPointerUp = (e: React.PointerEvent): void => {
+    scrubbing.current = false
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const bodyClass = [
+    'relative',
+    motionDragActive && canDropMotion && !isHover ? 'ring-1 ring-inset ring-blue-500/40' : '',
+    isHover && canDropMotion ? 'bg-blue-500/15 ring-2 ring-inset ring-blue-400/70' : '',
+    motionDragActive && !canDropMotion ? 'opacity-40' : ''
+  ]
+    .filter(Boolean)
+    .join(' ')
 
   return (
     <div className="flex border-b border-zinc-800/60">
@@ -170,18 +310,20 @@ function TrackLane({
           {track.muted ? '🔇' : '🔊'}
         </button>
         <span className="truncate text-zinc-300">{track.label}</span>
+        {motionDragActive && !canDropMotion && (
+          <span className="ml-auto text-[10px] text-zinc-500">🚫</span>
+        )}
       </div>
       <div
-        className="relative"
-        style={{ width, height: LANE_HEIGHT }}
-        onDragOver={(e) => e.preventDefault()}
+        className={bodyClass}
+        style={{ width, height: LANE_HEIGHT, touchAction: 'none' }}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
         onDrop={onDrop}
-        onPointerDown={(e) => {
-          // Click empty lane area → scrub.
-          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-          const t = (e.clientX - rect.left) / pps
-          usePlaybackStore.getState().seek(t, useTimelineStore.getState().duration)
-        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
       >
         {track.clips.map((clip) => (
           <ClipBlock
@@ -195,6 +337,14 @@ function TrackLane({
             onSelect={onSelectClip}
           />
         ))}
+        {isHover && canDropMotion && caretX !== null && (
+          <div
+            className="tm-caret pointer-events-none absolute top-0 z-30 h-full w-0.5 bg-blue-300"
+            style={{ left: caretX }}
+          >
+            <div className="absolute -left-1 -top-1 h-2 w-2 rounded-full bg-blue-300" />
+          </div>
+        )}
       </div>
     </div>
   )
@@ -219,14 +369,25 @@ function ClipBlock({
 }): React.JSX.Element {
   const left = clip.startTime * pps
   const width = Math.max(8, clip.duration * pps)
-  const [drag, setDrag] = useState<null | { mode: 'move' | 'l' | 'r'; startX: number; base: number }>(null)
+  // `base` is the frozen value of whichever field this drag resizes (startTime
+  // for 'move', duration for 'l'/'r'); `baseStart` freezes the start so the
+  // 'l' branch can pin the RIGHT edge instead of reading live, already-mutated
+  // values (which compounded the cumulative dx every move event).
+  const [drag, setDrag] = useState<
+    null | { mode: 'move' | 'l' | 'r'; startX: number; base: number; baseStart: number }
+  >(null)
 
   const onPointerDown = (e: React.PointerEvent, mode: 'move' | 'l' | 'r'): void => {
     if (locked) return
     e.stopPropagation()
     onSelect(clip.id)
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-    setDrag({ mode, startX: e.clientX, base: mode === 'move' ? clip.startTime : clip.duration })
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setDrag({
+      mode,
+      startX: e.clientX,
+      base: mode === 'move' ? clip.startTime : clip.duration,
+      baseStart: clip.startTime
+    })
   }
 
   const onPointerMove = (e: React.PointerEvent): void => {
@@ -236,17 +397,26 @@ function ClipBlock({
     if (drag.mode === 'move') {
       store.moveClip(clip.id, Math.max(0, drag.base + dx))
     } else if (drag.mode === 'l') {
-      const newStart = Math.max(0, clip.startTime + dx)
-      const newDur = Math.max(0.1, clip.duration - dx)
-      store.trimClip(clip.id, newStart, newStart + newDur)
+      // Pin the frozen right edge (baseStart + base); only the start moves, so
+      // the clip trims without drifting — mirrors how 'r' pins the start. The
+      // upper cap keeps a 0.1s minimum, but never below baseStart (so a sub-0.1s
+      // clip can't be made to jump backward by trimming its left edge).
+      const frozenEnd = drag.baseStart + drag.base
+      const maxStart = Math.max(drag.baseStart, frozenEnd - 0.1)
+      const newStart = Math.max(0, Math.min(drag.baseStart + dx, maxStart))
+      store.trimClip(clip.id, newStart, frozenEnd)
     } else {
-      store.trimClip(clip.id, clip.startTime, clip.startTime + Math.max(0.1, drag.base + dx))
+      store.trimClip(clip.id, drag.baseStart, drag.baseStart + Math.max(0.1, drag.base + dx))
     }
   }
 
   const onPointerUp = (e: React.PointerEvent): void => {
     if (drag) {
-      ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+      } catch {
+        /* ignore */
+      }
       setDrag(null)
     }
   }
@@ -266,11 +436,11 @@ function ClipBlock({
       {!locked && (
         <>
           <span
-            className="absolute left-0 top-0 h-full w-1.5 cursor-ew-resize bg-black/30"
+            className="absolute left-0 top-0 h-full w-2 cursor-ew-resize rounded-l bg-black/30 hover:bg-white/50"
             onPointerDown={(e) => onPointerDown(e, 'l')}
           />
           <span
-            className="absolute right-0 top-0 h-full w-1.5 cursor-ew-resize bg-black/30"
+            className="absolute right-0 top-0 h-full w-2 cursor-ew-resize rounded-r bg-black/30 hover:bg-white/50"
             onPointerDown={(e) => onPointerDown(e, 'r')}
           />
         </>

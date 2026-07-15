@@ -79,15 +79,25 @@ const TPOSE: MotionSpec = {
 
 const CIRCLE: MotionSpec = {
   name: 'Left Arm Circle (画圆)',
-  description: 'Left arm draws a horizontal circle, 3s loop.',
+  description: 'Left arm traces a circle in front, 3s loop.',
   tags: ['test', 'circle', 'loop'],
   fps: 30,
   duration: 3,
   poseAt: (t) => {
-    const angle = t * Math.PI * 2
+    // Trace a cone in the front-left quadrant: a horizontal sweep (±60° yaw)
+    // combined with a vertical lift (±60° elevation), 90° out of phase so the
+    // hand draws a circle. The arm direction stays at world x = cos(yaw)·cos(elev)
+    // > 0, i.e. ALWAYS on the character's left side — it never crosses the body
+    // midline or clips through the right arm (the previous full-360° yaw bug).
+    const phase = t * Math.PI * 2
+    const yaw = Math.cos(phase) * (Math.PI / 3)
+    const elev = Math.sin(phase) * (Math.PI / 3)
+    const qYaw = Quaternion.RotationAxis(new Vector3(0, 1, 0), yaw)
+    const qElev = Quaternion.RotationAxis(new Vector3(0, 0, 1), elev)
+    const q = qYaw.multiply(qElev) // lift first, then sweep
     return {
-      [SkeletonJoint.L_SHOULDER]: qAxis([0, 1, 0], angle),
-      [SkeletonJoint.L_ELBOW]: qAxis([0, 0, 1], 0.2)
+      [SkeletonJoint.L_SHOULDER]: [q.x, q.y, q.z, q.w],
+      [SkeletonJoint.L_ELBOW]: qAxis([0, 0, 1], 0.25)
     }
   },
   beats: (fc) => [

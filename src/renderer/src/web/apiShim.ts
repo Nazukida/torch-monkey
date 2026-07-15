@@ -23,6 +23,7 @@ import type {
   PythonMode,
   ProgressEvent,
   PythonRuntime,
+  VideoInfo,
   VideoProcessOptions,
   BilibiliProcessOptions,
   BilibiliVideoInfo,
@@ -418,7 +419,20 @@ export const webAPI: ElectronAPI = {
       return { ok: false as const, latencyMs: Math.round(performance.now() - t0), error: (e as Error).message }
     }
   },
-  previewVideo: async () => ({ error: 'previewVideo not supported in browser' }),
+  previewVideo: async (filePath) => {
+    const file = getFile(filePath)
+    if (!file) return { error: 'file not found' }
+    try {
+      const form = new FormData()
+      form.append('file', file, file.name)
+      const res = await fetch(`${base()}/api/preview-video`, { method: 'POST', body: form })
+      if (!res.ok) return { error: `HTTP ${res.status}: ${await res.text()}` }
+      const j = (await res.json()) as { ok?: boolean; info?: VideoInfo; error?: string }
+      return { info: j.info, error: j.error }
+    } catch (e) {
+      return { error: (e as Error).message }
+    }
+  },
   processVideo: async (filePath, options: VideoProcessOptions = {}) => {
     const file = getFile(filePath)
     if (!file) return failedCapture('file not found')

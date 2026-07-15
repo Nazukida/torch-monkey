@@ -25,6 +25,11 @@ export function MotionLibrary(): React.JSX.Element {
     }
     e.dataTransfer.setData('application/x-torchmonkey-motion', JSON.stringify(payload))
     e.dataTransfer.effectAllowed = 'copy'
+    useUiStore.getState().setMotionDragActive(true)
+  }
+
+  const onDragEnd = (): void => {
+    useUiStore.getState().setMotionDragActive(false)
   }
 
   return (
@@ -68,6 +73,7 @@ export function MotionLibrary(): React.JSX.Element {
             key={m.id}
             draggable
             onDragStart={(e) => onDragStart(e, m)}
+            onDragEnd={onDragEnd}
             onClick={() => void store.selectMotion(m.id)}
             className={`mb-1 cursor-pointer rounded border px-2 py-1.5 text-sm ${
               selectedId === m.id

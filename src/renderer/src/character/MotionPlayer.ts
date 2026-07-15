@@ -3,6 +3,7 @@ import { SkeletonJoint } from '@shared/constants/skeleton'
 import { BabylonEngine } from '@renderer/engine/BabylonEngine'
 import type { CharacterModel } from './CharacterModel'
 import type { MotionData, FramePose, JointTransform } from '@shared/types/motion'
+import { clampPose } from './jointLimits'
 
 /**
  * Drives a {@link CharacterModel} from a {@link MotionData}.
@@ -27,6 +28,12 @@ export class MotionPlayer {
   private loop = false
   private playing = false
   private disposeEngineCb: (() => void) | null = null
+  /**
+   * When true (default), every applied pose is clamped to anatomical joint limits
+   * so no motion can drive a limb into an impossible/穿模 pose (arm-crossing,
+   * elbow lock-back, …). Disable for raw capture review.
+   */
+  enableJointLimits = true
 
   constructor(model: CharacterModel) {
     this.model = model
@@ -124,7 +131,8 @@ export class MotionPlayer {
     const i0 = Math.floor(f)
     const i1 = Math.min(i0 + 1, last)
     const frac = f - i0
-    const pose = this.interpolate(this.motion.poses[i0], this.motion.poses[i1], frac)
+    const raw = this.interpolate(this.motion.poses[i0], this.motion.poses[i1], frac)
+    const pose = this.enableJointLimits ? clampPose(raw) : raw
     this.model.applyPose(pose, this.rootOrigin)
   }
 

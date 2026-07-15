@@ -8,7 +8,7 @@ import { REFERENCE_REST_HEIGHT } from '@shared/constants/skeleton'
 import type { CharacterConfig } from '@shared/types/character'
 import { DEFAULT_CHARACTER_CONFIG } from '@shared/types/character'
 import type { GlowstickConfig } from '@shared/types/vfx'
-import { DEFAULT_VFX_CONFIG } from '@shared/types/vfx'
+import { useVfxStore } from '@renderer/stores/vfxStore'
 
 interface CharacterState {
   configs: Record<string, CharacterConfig>
@@ -60,7 +60,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       const cfg = { ...s.configs[id], bodyScale: s.configs[id].height / REFERENCE_REST_HEIGHT }
       const model = CharacterModel.createProcedural(id, cfg, scene)
       model.registerShadows(s._shadows)
-      s._vfx?.createForCharacter(id, model, defaultGlowConfig())
+      s._vfx?.createForCharacter(id, model, liveGlowConfig())
       const player = new MotionPlayer(model)
       s.models.set(id, model)
       s.players.set(id, player)
@@ -84,7 +84,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     if (scene) {
       const model = CharacterModel.createProcedural(id, cfg, scene)
       model.registerShadows(get()._shadows)
-      get()._vfx?.createForCharacter(id, model, defaultGlowConfig())
+      get()._vfx?.createForCharacter(id, model, liveGlowConfig())
       const player = new MotionPlayer(model)
 
       set((s) => ({
@@ -188,7 +188,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       if (scene) {
         const model = CharacterModel.createProcedural(cfg.id, map[cfg.id], scene)
         model.registerShadows(get()._shadows)
-        get()._vfx?.createForCharacter(cfg.id, model, defaultGlowConfig())
+        get()._vfx?.createForCharacter(cfg.id, model, liveGlowConfig())
         const player = new MotionPlayer(model)
         get().players.set(cfg.id, player)
         get().models.set(cfg.id, model)
@@ -210,6 +210,9 @@ function nextFreePosition(configs: Record<string, CharacterConfig>): [number, nu
   return [(n - (n % 2 === 0 ? n / 2 : (n - 1) / 2)) * 1.8, 0, 0]
 }
 
-function defaultGlowConfig(): GlowstickConfig {
-  return DEFAULT_VFX_CONFIG.glowstick
+/** The current glowstick config from the VFX store, so freshly-added (and
+ *  project-loaded) characters pick up the user's panel settings instead of a
+ *  hardcoded default. Live edits thereafter flow through SceneController. */
+function liveGlowConfig(): GlowstickConfig {
+  return useVfxStore.getState().config.glowstick
 }

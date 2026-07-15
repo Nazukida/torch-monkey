@@ -38,6 +38,7 @@ function quatFromTo(from: Vector3, to: Vector3): Quaternion {
 
 interface GlowstickInstance {
   stick: Mesh
+  material: PBRMaterial
   light: PointLight
   trail: TrailRenderer
   bindJoint: SkeletonJoint
@@ -53,6 +54,10 @@ export class GlowstickVFX {
   private scene: Scene
   private glowLayer: GlowLayer
   private characters = new Map<string, GlowstickInstance[]>()
+  /** Snapshot of the last config we pushed onto the scene, so a geometry-only
+   *  change (length/radius/offsetAngle) triggers a rebuild instead of being
+   *  silently dropped by the cheap in-place patch path. */
+  private lastApplied: GlowstickConfig | null = null
 
   constructor(scene: Scene) {
     this.scene = scene
@@ -144,7 +149,59 @@ export class GlowstickVFX {
 
     const trail = new TrailRenderer(this.scene, color)
 
-    return { stick, light, trail, bindJoint, color }
+    return { stick, material: mat, light, trail, bindJoint, color }
+  }
+
+  /**
+   * Apply live glowstick config changes to every character. Structural changes
+   * (enable/disable, double-wield toggle) rebuild the sticks; scalar/color edits
+   * (intensity, lightIntensity, color) patch materials + lights in place so a
+   * slider drag stays cheap. `characters` is the live CharacterModel map.
+   *
+   * This is the apply-path the VFX panel was missing: without it every glowstick
+   * control mutated the store but nothing pushed the change onto the scene.
+   */
+  applyGlowConfig(config: GlowstickConfig, characters: Iterable<[string, CharacterModel]>): void {
+    const geomChanged = !this.lastApplied || this.geometryChanged(this.lastApplied, config)
+    for (const [id, model] of characters) {
+      const instances = this.characters.get(id)
+      const want = config.enabled ? (config.doubleWield ? 4 : 2) : 0
+      const have = instances?.length ?? 0
+      if (want !== have || geomChanged) {
+        // Structural change (enable flip / double-wield) OR a geometry change
+        // (length/radius/offsetAngle — those are baked into the cylinder mesh
+        // at create time and can't be patched in place) → rebuild this char.
+        this.createForCharacter(id, model, config)
+        continue
+      }
+      if (!instances || want === 0) continue
+      for (const inst of instances) {
+        const side = inst.bindJoint === SkeletonJoint.R_HAND ? config.rightHand : config.leftHand
+        const color = hexToColor3(side.color)
+        inst.material.albedoColor = color
+        inst.material.emissiveColor = color.scale(side.intensity)
+        inst.light.diffuse = color
+        inst.light.intensity = side.lightIntensity
+        inst.color = color
+        inst.trail.setColor(color)
+      }
+    }
+    this.lastApplied = config
+  }
+
+  /** True if any field that is baked into the cylinder mesh / stick orientation
+   *  at create time differs — those require a rebuild, not an in-place patch. */
+  private geometryChanged(a: GlowstickConfig, b: GlowstickConfig): boolean {
+    return (
+      a.enabled !== b.enabled ||
+      a.doubleWield !== b.doubleWield ||
+      a.leftHand.length !== b.leftHand.length ||
+      a.leftHand.radius !== b.leftHand.radius ||
+      a.leftHand.offsetAngle !== b.leftHand.offsetAngle ||
+      a.rightHand.length !== b.rightHand.length ||
+      a.rightHand.radius !== b.rightHand.radius ||
+      a.rightHand.offsetAngle !== b.rightHand.offsetAngle
+    )
   }
 
   /** Per-frame: keep the point light + trail pinned to the hand world position. */
@@ -179,6 +236,9 @@ export class GlowstickVFX {
     const instances = this.characters.get(characterId)
     if (!instances) return
     for (const inst of instances) {
+      // Mesh.dispose() defaults to disposeMaterialAndTextures=false, so the
+      // per-stick PBRMaterial is orphaned unless we dispose it explicitly.
+      inst.material.dispose()
       inst.stick.dispose()
       inst.light.dispose()
       inst.trail.dispose()
@@ -189,5 +249,6 @@ export class GlowstickVFX {
   dispose(): void {
     for (const id of Array.from(this.characters.keys())) this.removeCharacter(id)
     this.glowLayer.dispose()
+    this.lastApplied = null
   }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { SceneController } from '@renderer/lib/sceneController'
+import { BabylonEngine } from '@renderer/engine/BabylonEngine'
 
 /**
  * Hosts the Babylon canvas and boots the scene controller. Nothing else renders
@@ -11,26 +12,19 @@ export function ViewportContainer(): React.JSX.Element {
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    let disposed = false
-    let disposeController: (() => void) | null = null
+    // init() is idempotent and ref-counted; release() schedules a deferred
+    // teardown that a StrictMode remount cancels — so the scene survives the
+    // dev double-mount instead of being disposed under the live viewport.
+    void SceneController.init(canvas).catch((e) =>
+      console.error('[ViewportContainer] scene init failed:', e)
+    )
 
-    SceneController.init(canvas)
-      .then(() => {
-        if (disposed) {
-          SceneController.dispose()
-          return
-        }
-        disposeController = () => SceneController.dispose()
-      })
-      .catch((e) => console.error('[ViewportContainer] scene init failed:', e))
-
-    const onResize = () => SceneController
+    const onResize = () => BabylonEngine.resize()
     window.addEventListener('resize', onResize)
 
     return () => {
-      disposed = true
       window.removeEventListener('resize', onResize)
-      disposeController?.()
+      SceneController.release()
     }
   }, [])
 

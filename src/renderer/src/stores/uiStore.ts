@@ -12,6 +12,11 @@ interface UiState {
   serverSettingsOpen: boolean
   openServerSettings: () => void
   closeServerSettings: () => void
+
+  /** True while a motion card is being dragged from the library — lets every
+   *  timeline track show its ready/eligible state before the pointer enters. */
+  motionDragActive: boolean
+  setMotionDragActive: (v: boolean) => void
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -21,5 +26,8 @@ export const useUiStore = create<UiState>((set) => ({
 
   serverSettingsOpen: false,
   openServerSettings: () => set({ serverSettingsOpen: true }),
-  closeServerSettings: () => set({ serverSettingsOpen: false })
+  closeServerSettings: () => set({ serverSettingsOpen: false }),
+
+  motionDragActive: false,
+  setMotionDragActive: (v) => set({ motionDragActive: v })
 }))

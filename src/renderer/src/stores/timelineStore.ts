@@ -93,6 +93,14 @@ export const useTimelineStore = create<TimelineStoreState>((set, get) => ({
     })),
 
   addClip: (trackId, clip) => {
+    // Defensive: motion clips only belong on character tracks. The UI already
+    // gates this (camera/vfx lanes reject the drop), but keep the store honest
+    // so a future caller can't silently land a motion on the wrong track.
+    const track = get().tracks.find((t) => t.id === trackId)
+    if (!track || track.type !== 'character') {
+      console.warn(`[timeline] addClip rejected: track ${trackId} is not a character track`)
+      return ''
+    }
     const id = uuid()
     const full: TimelineClip = { ...clip, id }
     set((s) => ({

@@ -74,6 +74,9 @@ export default function App(): React.JSX.Element {
         case 'importVideo':
           void importVideoForCapture()
           break
+        case 'about':
+          window.alert('Torch Monkey\nWota-艺 3D 编排与可视化软件\n\n版本 1.0.0\nMIT License')
+          break
       }
     })
     const offKeys = bindKeyboardShortcuts()
