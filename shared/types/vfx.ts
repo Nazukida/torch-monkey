@@ -69,7 +69,7 @@ export const DEFAULT_VFX_CONFIG: VFXConfig = {
     bloomWeight: 0.8,
     bloomKernel: 64,
     bloomScale: 0.5,
-    exposure: 1.2,
+    exposure: 1.0,
     contrast: 1.15,
     vignetteEnabled: true,
     vignetteWeight: 0.5,

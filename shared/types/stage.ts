@@ -60,7 +60,9 @@ export const DEFAULT_LIGHT_CONFIG: LightConfig = {
       position: [0, 8, 5],
       direction: [0, -1, -0.5],
       angle: Math.PI / 4,
-      intensity: 2.0,
+      // 0.8 keeps the diffuse term under 1.0 for a mid-tone tint (the old 2.0
+      // clamped ~0.6-0.8 character colours to pure white on first render).
+      intensity: 0.8,
       color: '#fff2cc',
       shadowEnabled: true
     }

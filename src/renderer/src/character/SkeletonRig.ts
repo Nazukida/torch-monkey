@@ -21,6 +21,30 @@ import {
 import type { FramePose } from '@shared/types/motion'
 
 /**
+ * Presentation rest pose — the visual "ready" stance a performer returns to when
+ * idle / reset / eased back after a clip ends: legs abducted to a 2× shoulder-
+ * width spread, arms held horizontal (the SMPL T-pose).
+ *
+ * This is the DISPLAY-ONLY idle target. It MUST NOT change {@link SMPL24_REST_POSE}
+ * (which stays byte-identical to python/lib/skeleton_def.py because captured-motion
+ * rotations are authored local-to that T-pose). We express the wide stance as local
+ * joint rotations layered on top of the unchanged rest offsets: a ±18° hip abduction
+ * about the forward (Z) axis swings each foot ≈0.26 m outboard, landing the feet at
+ * roughly twice shoulder width. The shoulder/elbow chain is left at identity so the
+ * arms stay horizontal (照原样平举).
+ */
+const STANCE_ABDUCT_RAD = 18 * (Math.PI / 180)
+const PRESENTATION_REST_ROT: Partial<Record<SkeletonJoint, Quaternion>> = {
+  [SkeletonJoint.L_HIP]: Quaternion.RotationAxis(new Vector3(0, 0, 1), STANCE_ABDUCT_RAD),
+  [SkeletonJoint.R_HIP]: Quaternion.RotationAxis(new Vector3(0, 0, 1), -STANCE_ABDUCT_RAD)
+}
+
+/** Local rest rotation for a joint in the presentation stance (identity outside the hips). */
+function presentationRestRotation(j: SkeletonJoint): Quaternion {
+  return PRESENTATION_REST_ROT[j] ?? Quaternion.Identity()
+}
+
+/**
  * Procedural SMPL-24 rig built from {@link shared/constants/skeleton}.
  *
  * Implementation note: we use a `TransformNode` per joint (parented per the
@@ -50,7 +74,10 @@ export class SkeletonRig {
       node.parent = parentIdx === null ? this.root : this.nodes[parentIdx]
       const off = restBoneOffset(j as SkeletonJoint)
       node.position = new Vector3(off[0], off[1], off[2])
-      node.rotationQuaternion = Quaternion.Identity()
+      // Spawn already in the presentation (wide-stance) rest pose so a freshly
+      // created character with no motion is immediately feet-apart, instead of
+      // starting in the narrow SMPL T-pose and easing outward over 1-2 seconds.
+      node.rotationQuaternion = presentationRestRotation(j as SkeletonJoint).clone()
       this.nodes.push(node)
     }
   }
@@ -97,9 +124,35 @@ export class SkeletonRig {
   resetToRestPose(): void {
     for (let j = 0; j < SKELETON_JOINT_COUNT; j++) {
       const node = this.nodes[j]
-      node.rotationQuaternion = Quaternion.Identity()
+      node.rotationQuaternion = presentationRestRotation(j as SkeletonJoint).clone()
       const off = restBoneOffset(j as SkeletonJoint)
       node.position = new Vector3(off[0], off[1], off[2])
+    }
+  }
+
+  /**
+   * Ease every joint one step toward the presentation rest stance. Rotations
+   * slerp toward {@link presentationRestRotation}; the pelvis additionally lerps
+   * its position back to the rest offset (the only joint whose position ever
+   * moves during playback). Non-pelvis joint positions are constant rest offsets,
+   * so they need no position ease. `alpha` is the per-frame blend weight (0 = no
+   * change, 1 = snap to rest); the caller derives it frame-rate-independently.
+   */
+  easeToRest(alpha: number): void {
+    const a = Math.max(0, Math.min(1, alpha))
+    if (a <= 0) return
+    for (let j = 0; j < SKELETON_JOINT_COUNT; j++) {
+      const node = this.nodes[j]
+      const cur = node.rotationQuaternion ?? Quaternion.Identity()
+      node.rotationQuaternion = Quaternion.Slerp(cur, presentationRestRotation(j as SkeletonJoint), a)
+      if (j === SkeletonJoint.PELVIS) {
+        const off = restBoneOffset(SkeletonJoint.PELVIS)
+        node.position = Vector3.Lerp(
+          node.position,
+          new Vector3(off[0], off[1], off[2]),
+          a
+        )
+      }
     }
   }
 

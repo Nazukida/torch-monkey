@@ -10,6 +10,12 @@ interface TimelineStoreState {
   audioDuration: number
   beatMarkers: BeatMarker[]
 
+  /** Magnetic snap while dragging/dropping clips (gap-free placement). */
+  snapEnabled: boolean
+  snapThreshold: number
+  toggleSnap: () => void
+  setSnapThreshold: (v: number) => void
+
   addTrack: (type: TimelineTrackType, characterId?: string, label?: string) => string
   removeTrack: (trackId: string) => void
   reorderTracks: (from: number, to: number) => void
@@ -55,6 +61,11 @@ export const useTimelineStore = create<TimelineStoreState>((set, get) => ({
   audioPath: null,
   audioDuration: 0,
   beatMarkers: [],
+
+  snapEnabled: true,
+  snapThreshold: 0.08,
+  toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
+  setSnapThreshold: (v) => set({ snapThreshold: Math.max(0, v) }),
 
   addTrack: (type, characterId, label) => {
     const id = uuid()

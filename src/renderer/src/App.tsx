@@ -9,7 +9,6 @@ import { ServerSettingsDialog } from './components/ServerSettingsDialog'
 import { useMotionStore } from './stores/motionStore'
 import { useProjectStore } from './stores/projectStore'
 import { useCharacterStore } from './stores/characterStore'
-import { useTimelineStore } from './stores/timelineStore'
 import { bindKeyboardShortcuts } from './lib/keyboard'
 import { importVideoForCapture } from './lib/capture'
 import type { PythonHealthResult } from '@shared/types/electron'
@@ -47,11 +46,11 @@ export default function App(): React.JSX.Element {
       void refreshPythonStatus()
     }, 8000)
 
-    // Seed a starter project if empty: one character + one character track.
+    // Seed a starter project if empty: one character (its timeline track is now
+    // created automatically by addCharacter, so every performer is editable).
     const chars = useCharacterStore.getState()
     if (Object.keys(chars.configs).length === 0) {
-      const id = chars.addCharacter({ name: 'Player 1', position: [0, 0, 1] })
-      useTimelineStore.getState().addTrack('character', id, 'Player 1')
+      chars.addCharacter({ name: 'Player 1', position: [0, 0, 1] })
     }
 
     const offProgress = window.electronAPI.onProgress((e) => {
@@ -75,7 +74,7 @@ export default function App(): React.JSX.Element {
           void importVideoForCapture()
           break
         case 'about':
-          window.alert('Torch Monkey\nWota-艺 3D 编排与可视化软件\n\n版本 1.0.0\nMIT License')
+          window.alert('Torch Monkey\nWota-艺 3D 编排与可视化软件\n\n版本 0.6.0\nMIT License')
           break
       }
     })

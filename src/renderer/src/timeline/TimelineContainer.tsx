@@ -3,6 +3,7 @@ import { TransportBar } from './TransportBar'
 import { useTimelineStore } from '@renderer/stores/timelineStore'
 import { usePlaybackStore } from '@renderer/stores/playbackStore'
 import { useUiStore } from '@renderer/stores/uiStore'
+import { snapTime, type SnapContext } from './snap'
 import type { TimelineClip, TimelineTrack } from '@shared/types/timeline'
 
 const LANE_HEIGHT = 44
@@ -17,6 +18,22 @@ interface DroppedMotionPayload {
   fps: number
 }
 
+/**
+ * Build the snap context for the clip being dragged/dropped. Threshold is 0 when
+ * snap is disabled, so {@link snapTime} becomes a pass-through. Clips are gathered
+ * across ALL tracks so performers can align to the same beat/edge as neighbours.
+ */
+function buildSnapContext(activeClipId: string): SnapContext {
+  const tl = useTimelineStore.getState()
+  return {
+    activeClipId,
+    clips: tl.tracks.flatMap((t) => t.clips),
+    playhead: usePlaybackStore.getState().currentTime,
+    origin: 0,
+    threshold: tl.snapEnabled ? tl.snapThreshold : 0
+  }
+}
+
 /** Map a pointer client X to a timeline time (seconds) using the element's own
  *  left edge — works for both the ruler and the lane body since each already
  *  starts at the post-gutter origin. */
@@ -29,6 +46,7 @@ function seekToX(clientX: number, el: Element, pps: number, duration: number): v
 export function TimelineContainer(): React.JSX.Element {
   const tracks = useTimelineStore((s) => s.tracks)
   const duration = useTimelineStore((s) => s.duration)
+  const snapEnabled = useTimelineStore((s) => s.snapEnabled)
   const currentTime = usePlaybackStore((s) => s.currentTime)
   const [pps, setPps] = useState(40)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
@@ -94,6 +112,15 @@ export function TimelineContainer(): React.JSX.Element {
           onClick={() => useTimelineStore.getState().setDuration(duration + 10)}
         >
           +10s
+        </button>
+        <button
+          className={`rounded px-2 py-0.5 ${
+            snapEnabled ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+          }`}
+          title="磁吸：拖拽时动作自动吸附到相邻动作边缘 / 播放头 / 起点"
+          onClick={() => useTimelineStore.getState().toggleSnap()}
+        >
+          🧲 磁吸
         </button>
         <span className="ml-auto text-zinc-500">
           {tracks.length} 轨道 · 拖拽动作到角色轨道
@@ -228,7 +255,10 @@ function TrackLane({
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    setCaretX(Math.max(0, e.clientX - rect.left))
+    const rawX = Math.max(0, e.clientX - rect.left)
+    // Snap the caret preview so it shows where the clip will actually land.
+    const snapped = snapTime(rawX / pps, buildSnapContext('__new__'))
+    setCaretX(snapped.matchedTarget !== null ? snapped.time * pps : rawX)
   }
   const onDragLeave = (): void => {
     setDragDepth((d) => {
@@ -247,7 +277,8 @@ function TrackLane({
     if (!raw) return
     const payload = JSON.parse(raw) as DroppedMotionPayload
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const startTime = Math.max(0, (e.clientX - rect.left) / pps)
+    const rawStart = Math.max(0, (e.clientX - rect.left) / pps)
+    const startTime = snapTime(rawStart, buildSnapContext('__new__')).time
     useTimelineStore
       .getState()
       .addClipFromMotion(
@@ -394,8 +425,28 @@ function ClipBlock({
     if (!drag) return
     const dx = (e.clientX - drag.startX) / pps
     const store = useTimelineStore.getState()
+    const sctx = buildSnapContext(clip.id)
     if (drag.mode === 'move') {
-      store.moveClip(clip.id, Math.max(0, drag.base + dx))
+      const candidate = Math.max(0, drag.base + dx)
+      // Snap whichever edge is closer to a target: the leading (start) or the
+      // trailing (end), so a clip butts against a neighbour on either side.
+      const snappedStart = snapTime(candidate, sctx)
+      const snappedEnd = snapTime(candidate + clip.duration, sctx)
+      let newStart = candidate
+      const startHit = snappedStart.matchedTarget !== null
+      const endHit = snappedEnd.matchedTarget !== null
+      if (startHit && endHit) {
+        newStart =
+          Math.abs(candidate - snappedStart.time) <=
+          Math.abs(candidate + clip.duration - snappedEnd.time)
+            ? snappedStart.time
+            : Math.max(0, snappedEnd.time - clip.duration)
+      } else if (startHit) {
+        newStart = snappedStart.time
+      } else if (endHit) {
+        newStart = Math.max(0, snappedEnd.time - clip.duration)
+      }
+      store.moveClip(clip.id, Math.max(0, newStart))
     } else if (drag.mode === 'l') {
       // Pin the frozen right edge (baseStart + base); only the start moves, so
       // the clip trims without drifting — mirrors how 'r' pins the start. The
@@ -403,10 +454,15 @@ function ClipBlock({
       // clip can't be made to jump backward by trimming its left edge).
       const frozenEnd = drag.baseStart + drag.base
       const maxStart = Math.max(drag.baseStart, frozenEnd - 0.1)
-      const newStart = Math.max(0, Math.min(drag.baseStart + dx, maxStart))
+      const raw = Math.max(0, Math.min(drag.baseStart + dx, maxStart))
+      const snapped = snapTime(raw, sctx)
+      const newStart = snapped.matchedTarget !== null ? Math.min(snapped.time, maxStart) : raw
       store.trimClip(clip.id, newStart, frozenEnd)
     } else {
-      store.trimClip(clip.id, drag.baseStart, drag.baseStart + Math.max(0.1, drag.base + dx))
+      const rawEnd = drag.baseStart + Math.max(0.1, drag.base + dx)
+      const snapped = snapTime(rawEnd, sctx)
+      const newEnd = snapped.matchedTarget !== null ? Math.max(drag.baseStart + 0.1, snapped.time) : rawEnd
+      store.trimClip(clip.id, drag.baseStart, newEnd)
     }
   }
 

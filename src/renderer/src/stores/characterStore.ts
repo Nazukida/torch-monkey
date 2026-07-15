@@ -9,6 +9,7 @@ import type { CharacterConfig } from '@shared/types/character'
 import { DEFAULT_CHARACTER_CONFIG } from '@shared/types/character'
 import type { GlowstickConfig } from '@shared/types/vfx'
 import { useVfxStore } from '@renderer/stores/vfxStore'
+import { useTimelineStore } from '@renderer/stores/timelineStore'
 
 interface CharacterState {
   configs: Record<string, CharacterConfig>
@@ -62,6 +63,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       model.registerShadows(s._shadows)
       s._vfx?.createForCharacter(id, model, liveGlowConfig())
       const player = new MotionPlayer(model)
+      wireDrag(id, model)
       s.models.set(id, model)
       s.players.set(id, player)
     }
@@ -86,6 +88,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       model.registerShadows(get()._shadows)
       get()._vfx?.createForCharacter(id, model, liveGlowConfig())
       const player = new MotionPlayer(model)
+      wireDrag(id, model)
 
       set((s) => ({
         configs: { ...s.configs, [id]: cfg },
@@ -96,10 +99,18 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     } else {
       set((s) => ({ configs: { ...s.configs, [id]: cfg }, selectedId: s.selectedId ?? id }))
     }
+    // Every performer gets its own editable timeline track so motion clips can
+    // be authored per-character — previously only the seed Player 1 got one and
+    // every subsequently-added performer was invisible/uneditable in the timeline.
+    useTimelineStore.getState().addTrack('character', id, cfg.name)
     return id
   },
 
-  removeCharacter: (id) =>
+  removeCharacter: (id) => {
+    // Drop the performer's timeline track too so it doesn't outlive its character.
+    const tl = useTimelineStore.getState()
+    const track = tl.tracks.find((t) => t.characterId === id)
+    if (track) tl.removeTrack(track.id)
     set((s) => {
       const models = new Map(s.models)
       const players = new Map(s.players)
@@ -116,7 +127,8 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         players,
         selectedId: s.selectedId === id ? null : s.selectedId
       }
-    }),
+    })
+  },
 
   selectCharacter: (id) => set({ selectedId: id }),
 
@@ -148,7 +160,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     const newId = get().addCharacter({
       ...cfg,
       name: `${cfg.name} copy`,
-      position: [cfg.position[0] + 1.5, cfg.position[1], cfg.position[2]]
+      position: [cfg.position[0] + MIN_SPACING, cfg.position[1], cfg.position[2]]
     })
     return newId
   },
@@ -161,7 +173,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         let pos: [number, number, number]
         if (mode === 'row') {
           const n = ids.length
-          pos = [(i - (n - 1) / 2) * 1.8, 0, 0]
+          pos = [(i - (n - 1) / 2) * MIN_SPACING, 0, 0]
         } else {
           // v-formation
           const row = Math.floor(i / 2)
@@ -190,6 +202,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         model.registerShadows(get()._shadows)
         get()._vfx?.createForCharacter(cfg.id, model, liveGlowConfig())
         const player = new MotionPlayer(model)
+        wireDrag(cfg.id, model)
         get().players.set(cfg.id, player)
         get().models.set(cfg.id, model)
       }
@@ -200,14 +213,41 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
   toJSON: () => Object.values(get().configs).map((c) => ({ ...c }))
 }))
 
+/** Minimum inter-performer spacing in metres — also used by alignCharacters. */
+const MIN_SPACING = 1.8
+
 function nextDefaultName(configs: Record<string, CharacterConfig>): string {
   const n = Object.keys(configs).length + 1
   return `Player ${n}`
 }
 
+/**
+ * First free X slot at MIN_SPACING pitch, skipping any slot already occupied
+ * (within a hair of MIN_SPACING). The old closed-form parity formula returned
+ * DUPLICATE x for consecutive odd/even pairs (n=1 and n=2 both → 1.8), which
+ * dropped every 2nd/4th performer on top of an existing one (穿模). This scan
+ * guarantees no two performers ever share a spawn slot, regardless of how they
+ * were created (Add button, duplicate, manual position).
+ */
 function nextFreePosition(configs: Record<string, CharacterConfig>): [number, number, number] {
-  const n = Object.keys(configs).length
-  return [(n - (n % 2 === 0 ? n / 2 : (n - 1) / 2)) * 1.8, 0, 0]
+  const taken = Object.values(configs).map((c) => c.position[0])
+  let i = 0
+  while (taken.some((x) => Math.abs(x - i * MIN_SPACING) < MIN_SPACING * 0.999)) i++
+  return [i * MIN_SPACING, 0, 0]
+}
+
+/**
+ * Attach 3D-viewport drag to a freshly-created model, mirroring the dragged XZ
+ * back into the character config (preserving the current Y) so the inspector
+ * sliders and project save stay in sync with direct on-stage repositioning.
+ * Called on every creation path so no performer is left un-draggable.
+ */
+function wireDrag(id: string, model: CharacterModel): void {
+  model.enableDrag((x, z) => {
+    const cur = useCharacterStore.getState().configs[id]
+    if (!cur) return
+    useCharacterStore.getState().updateConfig(id, { position: [x, cur.position[1], z] })
+  })
 }
 
 /** The current glowstick config from the VFX store, so freshly-added (and

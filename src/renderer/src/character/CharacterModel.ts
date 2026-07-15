@@ -11,6 +11,7 @@ import {
   ShadowGenerator,
   SceneLoader
 } from '@babylonjs/core'
+import { PointerDragBehavior } from '@babylonjs/core/Behaviors/Meshes/pointerDragBehavior'
 import { SkeletonRig } from './SkeletonRig'
 import {
   SkeletonJoint,
@@ -62,6 +63,8 @@ export class CharacterModel {
   readonly rig: SkeletonRig
   private meshes: AbstractMesh[] = []
   private material: StandardMaterial | null = null
+  private dragBehavior: PointerDragBehavior | null = null
+  private dragHitbox: Mesh | null = null
 
   private constructor(id: string, config: CharacterConfig, scene: Scene) {
     this.id = id
@@ -229,6 +232,54 @@ export class CharacterModel {
     this.rig.root.rotation = new Vector3(0, (deg * Math.PI) / 180, 0)
   }
 
+  /**
+   * Enable direct dragging of this performer in the 3D viewport on the ground
+   * (XZ) plane. An invisible pickable capsule enclosing the body is parented
+   * under the placement root so the user grabs the whole performer (not a thin
+   * limb). A {@link PointerDragBehavior} constrained to the XZ plane transfers
+   * each world-space drag delta onto {@link SkeletonRig.root}; the hitbox local
+   * position is reset every tick so it never drifts away from the rig. The
+   * supplied `onMoved` mirrors the new XZ into the store so config, the inspector
+   * sliders, and project save stay in sync. Must be (re)wired on every creation
+   * path (add / reconcile / loadFromProject).
+   */
+  enableDrag(onMoved: (x: number, z: number) => void): void {
+    if (this.dragBehavior) return // already wired
+    const scene = this.rig.root.getScene()
+    const hitbox = MeshBuilder.CreateCapsule(
+      `${this.id}__dragHitbox`,
+      { height: 1.7, radius: 0.35 },
+      scene
+    )
+    hitbox.parent = this.rig.root
+    hitbox.position = new Vector3(0, 0.85, 0)
+    hitbox.isVisible = false
+    hitbox.isPickable = true
+    // Limb meshes must not compete with the body hitbox for the pick.
+    for (const m of this.meshes) m.isPickable = false
+    this.dragHitbox = hitbox
+
+    const drag = new PointerDragBehavior({ dragPlaneNormal: new Vector3(0, 1, 0) })
+    drag.onDragObservable.add((evt) => {
+      // World-space delta along the XZ plane -> move the placement root.
+      this.rig.root.position.x += evt.delta.x
+      this.rig.root.position.z += evt.delta.z
+      // Keep the performer glued to its ground height (ignore any y drift).
+      this.rig.root.position.y = this.config.position[1] ?? 0
+      // Undo the behavior's own move of the hitbox so it stays centred on the rig.
+      hitbox.position = new Vector3(0, 0.85, 0)
+      onMoved(this.rig.root.position.x, this.rig.root.position.z)
+    })
+    hitbox.addBehavior(drag)
+    this.dragBehavior = drag
+  }
+
+  disableDrag(): void {
+    this.dragHitbox?.dispose()
+    this.dragHitbox = null
+    this.dragBehavior = null
+  }
+
   getJointWorldPosition(joint: SkeletonJoint): Vector3 {
     return this.rig.getJointWorldPosition(joint)
   }
@@ -245,11 +296,17 @@ export class CharacterModel {
     this.rig.resetToRestPose()
   }
 
+  /** Ease one step toward the presentation rest stance (idle / post-clip reset). */
+  easeToRest(alpha: number): void {
+    this.rig.easeToRest(alpha)
+  }
+
   frameUpdate(): void {
     this.rig.updateDebug()
   }
 
   dispose(): void {
+    this.disableDrag()
     for (const m of this.meshes) m.dispose()
     this.material?.dispose()
     this.rig.dispose()

@@ -14,6 +14,12 @@ import type { GlowstickConfig } from '@shared/types/vfx'
 import type { MotionPlayer } from '@renderer/character/MotionPlayer'
 
 /**
+ * Per-second damping rate for the ease-back-to-rest on undriven performers.
+ * Higher = snappier reset. 2/s ≈ 86% reset in 1s, 98% in 2s — a gentle return.
+ */
+const REST_EASE_RATE = 2.0
+
+/**
  * Wires the Zustand stores to the Babylon scene and owns the per-frame loop:
  * playback-time advance, per-character MotionPlayer driving, glowstick/trail
  * updates, and the kime bloom punch. Subscribes to config stores so panel edits
@@ -80,9 +86,13 @@ class SceneControllerImpl {
   }
 
   private wireStores(): void {
+    // Slice-specific subscriptions: compare prev vs next so a lighting edit does
+    // NOT rebuild the floor and a stage edit does NOT touch the light rig. The
+    // old blanket listeners fired on EVERY stage-store mutation, so dragging a
+    // lighting slider also disposed+recreated the floor mesh every tick.
     this.unsubs.push(
-      useStageStore.subscribe((s) => {
-        if (!this.stage) return
+      useStageStore.subscribe((s, prev) => {
+        if (!this.stage || s.config === prev.config) return
         this.stage.updateSize(s.config.width, s.config.depth)
         this.stage.setFloorMode(s.config.floorMode)
         this.stage.setShowGrid(s.config.showGrid)
@@ -91,7 +101,8 @@ class SceneControllerImpl {
       })
     )
     this.unsubs.push(
-      useStageStore.subscribe((s) => {
+      useStageStore.subscribe((s, prev) => {
+        if (s.lightConfig === prev.lightConfig) return
         this.lighting?.updateFromConfig(s.lightConfig)
       })
     )
@@ -121,9 +132,18 @@ class SceneControllerImpl {
     const now = playback.currentTime
     const active = timeline.getClipsAtTime(now)
 
+    // Characters whose pose is explicitly driven this frame (a clip sits under
+    // the playhead on their track). Everyone else eases back toward the rest
+    // stance — so scrubbing into a gap, or leaving a performer with no clip,
+    // slowly resets them instead of freezing mid-pose or reverse-playing.
+    const driven = new Set<string>()
+
     for (const { trackId, clip } of active) {
       const track = timeline.tracks.find((t) => t.id === trackId)
       if (!track || track.type !== 'character' || !track.characterId) continue
+      // Mark driven BEFORE the async motion load so the 1+ frames spent loading
+      // don't ease the character toward rest and then snap into the clip frame.
+      driven.add(track.characterId)
       const player = useCharacterStore.getState().getPlayer(track.characterId)
       if (!player) continue
       await this.ensureMotion(player, clip.motionId)
@@ -133,7 +153,11 @@ class SceneControllerImpl {
       if (frame !== null) player.seekToFrame(frame)
     }
 
-    for (const model of useCharacterStore.getState().models.values()) {
+    // Frame-rate-independent damping toward rest: alpha = 1 - e^(-rate·dt).
+    // rate≈2/s reaches ~86% in 1s, ~98% in 2s — a gentle "缓慢复位".
+    const restAlpha = 1 - Math.exp(-REST_EASE_RATE * delta)
+    for (const [id, model] of useCharacterStore.getState().models) {
+      if (!driven.has(id)) model.easeToRest(restAlpha)
       model.frameUpdate()
       this.vfx?.update(model)
     }
