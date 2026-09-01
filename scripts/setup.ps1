@@ -111,31 +111,54 @@ if ($Cpu) {
   Info "GPU: 用户指定 --cuda $Cuda / requested cu$Cuda torch."
 } else {
   $nv = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-  if ($nv) { Info "GPU: 检测到 nvidia-smi → 安装 CUDA 版 torch (cu121) / CUDA build (cu121)."; $wantCuda = "121" } else { Info "GPU: 未检测到 nvidia-smi → CPU 版 torch / CPU build." }
+  if ($nv) {
+    # Pick the CUDA build from the card's *compute capability*, not blindly cu121.
+    # Blackwell (RTX 50xx) is sm_120 and has no kernels in cu121 builds — torch
+    # would install fine and then die at the first kernel launch with
+    # "no kernel image is available for execution on the device".
+    $cap = $null
+    try { $cap = (nvidia-smi --query-gpu=compute_cap --format=csv,noheader | Select-Object -First 1).Trim() } catch { }
+    $capNum = 0.0
+    if ($cap) { [void][double]::TryParse($cap, [ref]$capNum) }
+    if ($capNum -ge 12.0) {
+      Info "GPU: compute capability $cap (Blackwell+) → cu128 / CUDA build cu128."
+      $wantCuda = "128"
+    } else {
+      Info "GPU: compute capability $cap → cu121 / CUDA build cu121."
+      $wantCuda = "121"
+    }
+  } else { Info "GPU: 未检测到 nvidia-smi → CPU 版 torch / CPU build." }
 }
-if ($wantCuda -in @("121", "118")) {
+if ($wantCuda -in @("118", "121", "128")) {
+  # torch version must match the CUDA build: sm_120 kernels first ship in cu128
+  # wheels, which start at torch 2.7. cu118/cu121 stay on the pinned 2.5.1.
+  $torchPin = if ($wantCuda -eq "128") { "torch==2.9.1" } else { "torch==2.5.1" }
   $url = "https://download.pytorch.org/whl/cu$wantCuda"
   if ($EnvBackend -eq "uv") {
-    Info "uv pip install --python $py torch==2.5.1 --index-url $url"
-    uv pip install --python $py "torch==2.5.1" --index-url $url
+    Info "uv pip install --python $py $torchPin --index-url $url"
+    uv pip install --python $py $torchPin --index-url $url
   } else {
-    Info "pip install torch==2.5.1 --index-url $url"
-    & $py -m pip install "torch==2.5.1" --index-url $url
+    Info "pip install $torchPin --index-url $url"
+    & $py -m pip install $torchPin --index-url $url
   }
   if ($LASTEXITCODE -ne 0) { Fail "CUDA torch 安装失败 / CUDA torch install failed. 重试 --cpu 或核对 CUDA 版本 / try --cpu or verify your CUDA toolkit." }
+} elseif ($wantCuda) {
+  Fail "不支持的 CUDA 版本 / unsupported --cuda value: $wantCuda (支持 / supported: 118, 121, 128)"
 }
 
-# 5) requirements
+# 5) requirements. -c constraints-numpy1.txt pins mediapipe's unpinned
+#    jax/jaxlib/opencv-contrib-python, which otherwise demand numpy>=2 and send
+#    pip into a backtrack loop against our pinned numpy==1.26.4.
 if ($EnvBackend -eq "uv") {
-  Info "uv pip install -r requirements.txt"
+  Info "uv pip install -r requirements.txt -c constraints-numpy1.txt"
   Push-Location $PyDir
-  uv pip install --python $py -r requirements.txt
+  uv pip install --python $py -r requirements.txt -c constraints-numpy1.txt
   $rc = $LASTEXITCODE
   Pop-Location
 } else {
-  Info "pip install -r requirements.txt"
+  Info "pip install -r requirements.txt -c constraints-numpy1.txt"
   Push-Location $PyDir
-  & $py -m pip install -r requirements.txt
+  & $py -m pip install -r requirements.txt -c constraints-numpy1.txt
   $rc = $LASTEXITCODE
   Pop-Location
 }

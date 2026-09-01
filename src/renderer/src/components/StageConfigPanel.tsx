@@ -33,7 +33,7 @@ export function StageConfigPanel(): React.JSX.Element {
         options={[
           { value: 'grid', label: '网格 Grid' },
           { value: 'solid', label: '纯色 Solid' },
-          { value: 'reflective', label: '反射 Reflective' }
+          { value: 'reflective', label: '光泽 Glossy' }
         ]}
         onChange={(v) => s.setFloorMode(v)}
       />
@@ -43,7 +43,15 @@ export function StageConfigPanel(): React.JSX.Element {
         value={config.backgroundColor}
         onChange={(v) => s.setBackgroundColor(v)}
       />
-      <Toggle label="显示参考网格" value={config.showGrid} onChange={(v) => s.setShowGrid(v)} />
+      {/* showGrid only feeds the grid material, so it is inert in the other
+          floor modes — grey it out instead of offering a dead control. */}
+      <Toggle
+        label="显示参考网格"
+        value={config.showGrid}
+        onChange={(v) => s.setShowGrid(v)}
+        disabled={config.floorMode !== 'grid'}
+        hint={config.floorMode !== 'grid' ? '仅在「网格 Grid」地板模式下可用' : undefined}
+      />
 
       <SectionTitle>灯光 / Lighting</SectionTitle>
       <Slider

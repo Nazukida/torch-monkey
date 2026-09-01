@@ -55,23 +55,26 @@ MEDIAPIPE_URLS = [
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task",
 ]
 
-# MotionBERT 3D-lifting checkpoint. The canonical release is Walter0807/MotionBERT
-# on Hugging Face (MIT license). The checkpoint is the full DSTformer (att_fuse)
-# pose-lifting model trained on Human3.6M (input: 2D+conf 17-joint, output: 3D).
+# MotionBERT 3D-lifting checkpoint. The canonical release lives on Hugging Face
+# under the author's HF account `walterzhu` (MIT license) — note this differs
+# from the GitHub handle `Walter0807`, which is NOT a Hugging Face org and
+# returns HTTP 401. The checkpoint is the full DSTformer (att_fuse) pose-lifting
+# model trained on Human3.6M (input: 2D+conf 17-joint, output: 3D), matching
+# DSTFORMER_CONFIG (dim_feat=512, depth=5, mlp_ratio=2) in lib/dstformer_model.py.
+# The *_lite_* checkpoint is a different architecture and will NOT load cleanly.
 # Loader: lib.dstformer_model.load_dstformer
 # Reference: https://github.com/Walter0807/MotionBERT
-#            https://huggingface.co/Walter0807/MotionBERT
+#            https://huggingface.co/walterzhu/MotionBERT
 MOTIONBERT_URLS = [
     # Hugging Face resolve endpoints (LFS-backed raw file download).
-    "https://huggingface.co/Walter0807/MotionBERT/resolve/main/checkpoint/mb3d.pth",
-    "https://huggingface.co/Walter0807/MotionBERT/resolve/main/pose_lift/mb3d.pth",
-    "https://huggingface.co/Walter0807/MotionBERT/resolve/main/mb3d.pth",
+    "https://huggingface.co/walterzhu/MotionBERT/resolve/main/checkpoint/pose3d/FT_MB_release_MB_ft_h36m/best_epoch.bin",
+    "https://huggingface.co/walterzhu/MotionBERT/resolve/main/checkpoint/pose3d/MB_train_h36m/best_epoch.bin",
 ]
 
 # Minimum plausible sizes to detect truncated downloads (bytes).
 MIN_SIZE_BYTES = {
     "pose_landmarker_heavy.task": 5_000_000,    # ~9 MB heavy task
-    "mb3d.pth": 5_000_000,                       # MotionBERT lite is ~10-50 MB
+    "mb3d.pth": 100_000_000,                     # MB_ft_h36m release is ~162 MB
 }
 
 

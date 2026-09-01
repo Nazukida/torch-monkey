@@ -9,3 +9,9 @@
 # the resolver from downloading a dozen incompatible jaxlib wheels.
 jax==0.4.30
 jaxlib==0.4.30
+
+# mediapipe also pulls an unpinned `opencv-contrib-python`. Versions >= 4.11
+# are built against numpy>=2, which conflicts with our pinned numpy==1.26.4 and
+# sends pip into a backtrack loop that re-downloads a ~46MB wheel per candidate
+# version. Pin it to the same release as the opencv-python we already pin.
+opencv-contrib-python==4.10.0.84

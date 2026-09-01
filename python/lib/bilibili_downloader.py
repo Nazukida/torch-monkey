@@ -33,6 +33,19 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# Bilibili's web API answers HTTP 412 (Precondition Failed) to requests that
+# don't look like a browser -- yt-dlp's default User-Agent is enough to trip it,
+# with or without cookies, and the error surfaces as a confusing network failure.
+# A desktop UA plus a bilibili.com Referer is sufficient for public videos; no
+# login or cookie jar is required.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.bilibili.com/",
+}
+
 # A canonical Bilibili BV id: "BV"/"bv" + exactly 10 alphanumerics (case-insensitive
 # prefix, because users frequently type lowercase). Capture group = the id.
 _BV_RE = re.compile(r"([Bb][Vv][0-9A-Za-z]{10})")
@@ -49,11 +62,24 @@ class BilibiliDownloadError(Exception):
     """Raised when a BV id / URL is invalid or the download/probe fails."""
 
 
+def _canonical_bv(raw: str) -> str:
+    """Canonicalise only the ``BV`` prefix; the 10-char payload keeps its case.
+
+    A BV id encodes a number in a base58 alphabet that contains **both** cases,
+    so ``BV1mV4y1R7Q3`` and ``BV1MV4Y1R7Q3`` are different ids and at most one
+    of them exists. Upper-casing the whole thing (as this module used to) turns
+    a valid id into a 404 — yt-dlp then reports a confusing network error for a
+    video that was never the one the user asked for.
+    """
+    return "BV" + raw[2:] if raw[:2].lower() == "bv" else "BV" + raw
+
+
 def normalize_bvid(bvid: str) -> str:
     """Extract a canonical ``BV`` + 10 chars from a BV id or bilibili URL.
 
     Accepts ``BV1xx411c7mD`` / ``bv1xx411c7mD`` / a bilibili.com video URL
-    containing a BV id / a bare 10-char id. Returns the upper-case canonical id.
+    containing a BV id / a bare 10-char id. Only the ``BV`` prefix is
+    normalised — the payload is case-sensitive and is returned verbatim.
     Raises :class:`BilibiliDownloadError` if no BV id is present (e.g. a b23.tv
     short link with no BV in it — those need :func:`resolve_target` instead).
     """
@@ -62,9 +88,9 @@ def normalize_bvid(bvid: str) -> str:
     s = bvid.strip()
     m = _BV_RE.search(s)
     if m:
-        return m.group(1).upper()
+        return _canonical_bv(m.group(1))
     if _BARE_RE.match(s):
-        return ("BV" + s).upper()
+        return _canonical_bv(s)
     raise BilibiliDownloadError(
         f"Could not extract a Bilibili BV id from: {bvid!r}. "
         "Expected e.g. 'BV1xx411c7mD', 'bv...', or a bilibili.com video URL."
@@ -96,18 +122,18 @@ def resolve_target(bvid_or_url: str, page: Optional[int] = None) -> tuple[str, s
         if page_q and "?p=" not in url:
             url += page_q
         bv = _BV_RE.search(s)
-        label = bv.group(1).upper() if bv else "bilibili"
+        label = _canonical_bv(bv.group(1)) if bv else "bilibili"
         return url, label
 
     # 2) Bare BV id (case-insensitive prefix).
     m = _BV_RE.search(s)
     if m:
-        canon = m.group(1).upper()
+        canon = _canonical_bv(m.group(1))
         return f"https://www.bilibili.com/video/{canon}{page_q}", canon
 
     # 3) Bare 10-char id without prefix.
     if _BARE_RE.match(s):
-        canon = ("BV" + s).upper()
+        canon = _canonical_bv(s)
         return f"https://www.bilibili.com/video/{canon}{page_q}", canon
 
     raise BilibiliDownloadError(
@@ -169,6 +195,7 @@ def probe_bilibili(
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
+        "http_headers": dict(_BROWSER_HEADERS),
     }
     if cookies:
         opts["cookiefile"] = cookies
@@ -253,6 +280,7 @@ def download_bilibili(
         "retries": 3,
         "fragment_retries": 3,
         "concurrent_fragment_downloads": 4,
+        "http_headers": dict(_BROWSER_HEADERS),
     }
     if cookies:
         opts["cookiefile"] = cookies

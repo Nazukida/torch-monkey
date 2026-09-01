@@ -95,6 +95,10 @@ class VideoProcessor:
     ) -> None:
         self.video_path: Path = Path(video_path)
         self.target_fps: float = max(1.0, float(target_fps))
+        #: fps actually achieved by :meth:`extract_frames`. Frames are only ever
+        #: dropped, never interpolated, so asking for 30 fps from 24 fps footage
+        #: yields 24. Set during extraction; falls back to the request until then.
+        self.effective_fps: float = self.target_fps
         self.max_frames: int = max(1, int(max_frames))
         self.ffprobe_bin: str = ffprobe_bin
 
@@ -230,6 +234,11 @@ class VideoProcessor:
 
             # Keep every Nth frame to hit the target fps (no interpolation).
             step = max(1, int(round(source_fps / self.target_fps)))
+            # With step clamped at 1 we cannot exceed the source rate, so the
+            # real output rate is source/step. Tagging the result with the
+            # *requested* fps instead makes the motion play back at the wrong
+            # speed (24 fps footage labelled 30 fps runs 25% fast).
+            self.effective_fps = source_fps / step
 
             frames: List[object] = []
             frame_idx = 0
@@ -259,8 +268,10 @@ class VideoProcessor:
             )
 
         logger.info(
-            "Extracted %d frames (source_fps=%.2f, target=%.2f, step=%d) from %s",
-            len(frames), source_fps, self.target_fps, step, self.video_path,
+            "Extracted %d frames (source_fps=%.2f, target=%.2f, effective=%.2f, "
+            "step=%d) from %s",
+            len(frames), source_fps, self.target_fps, self.effective_fps, step,
+            self.video_path,
         )
         return frames
 

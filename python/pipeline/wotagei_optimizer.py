@@ -386,12 +386,32 @@ class WotageiOptimizer:
         cutoff = min(max(cutoff, 1e-3), 0.99)
 
         # Protection weight per frame (1 = keep raw, 0 = use filtered).
+        #
+        # This used to be a hard `weight[lo:hi] = 1.0` mask. That contradicts the
+        # docstring above and, more importantly, puts a 0->1 step at both edges of
+        # every protection window: the output jumps between the filtered and the
+        # raw signal within one frame. With a kime every few frames that is
+        # dozens of discontinuities per clip, each one a velocity spike -- the
+        # dominant source of implausible joint speeds in captured motion.
+        #
+        # Instead the core stays raw and a smoothstep ramp (3t^2-2t^3, C1 at both
+        # ends) hands back over to the filtered signal, so velocity stays
+        # continuous across the seam.
         weight = np.zeros(T, dtype=np.float64)
         W = self.kime_protection_window
+        R = max(2, W)  # ramp half-width, in frames
         for kf in kime_frames:
-            lo = max(0, kf - W)
-            hi = min(T, kf + W + 1)
-            weight[lo:hi] = 1.0
+            lo = max(0, kf - W - R)
+            hi = min(T, kf + W + R + 1)
+            for i in range(lo, hi):
+                dist = abs(i - kf)
+                if dist <= W:
+                    w_i = 1.0
+                else:
+                    t = (dist - W) / float(R)          # 0 at core edge, 1 at ramp end
+                    w_i = 1.0 - (t * t * (3.0 - 2.0 * t))
+                if w_i > weight[i]:
+                    weight[i] = w_i
 
         # Need a long-enough signal for filtfilt's padlen; fall back to raw if
         # too short.

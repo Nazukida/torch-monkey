@@ -36,7 +36,13 @@ scipy==1.13.1                  # 巴特沃斯滤波（Butterworth）、中值滤
 
 # --- 深度学习（CPU wheel 默认；GPU 请按上文 CUDA index 覆盖）-------------
 # 下面这行装的是 CPU 版。GPU 机器请「先」按文件头部的 CUDA index 安装。
-torch==2.5.1
+#
+# 为什么是 >= 而不是 ==：PEP 440 里 `==2.5.1` 能匹配 `2.5.1+cu121`（local
+# version 被忽略），所以旧的 `torch==2.5.1` 对 cu121 是安全的；但它会把任何
+# **更高**版本的 CUDA torch 降级回 2.5.1 CPU 版。而 Blackwell（RTX 50 系，
+# sm_120）必须用 cu128 + torch>=2.7，2.5.1 根本没有对应的 kernel。
+# 用下界 pin 后，setup 脚本先装好的 CUDA torch 不会被这一行冲掉。
+torch>=2.5.1
 
 # --- 导出 / 图像（Export / imaging）-------------------------------------
 pygltflib==1.16.3              # glTF/glB 动作导出

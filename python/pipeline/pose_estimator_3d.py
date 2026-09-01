@@ -109,6 +109,25 @@ def _crop_scale(motion: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     return result.astype(np.float32)
 
 
+# ---------------------------------------------------------------------------
+# H36M-17 joint-order bridge.
+#
+# lib/blazepose_to_h36m.py emits its own 17-joint layout (…7 spine, 8 neck,
+# 9 head, 10-12 L-arm, 13-15 R-arm, 16 thorax). The released DSTformer was
+# trained on the Human3.6M/VideoPose3D layout (…7 Spine, 8 Thorax, 9 Neck,
+# 10 Head, 11-13 L-arm, 14-16 R-arm), so from index 8 up the two disagree and
+# every upper-body joint lands in the wrong input slot.
+#
+# Measured on a 481-frame clip, 2D reprojection error (% of torso):
+#   project layout  mean 17.08  median 13.15  p90 33.33
+#   training layout mean 15.92  median 12.26  p90 30.21
+#
+# PROJ_FOR_STD[i] = project index whose joint belongs in training slot i.
+PROJ_FOR_STD = (0, 1, 2, 3, 4, 5, 6, 7, 16, 8, 9, 10, 11, 12, 13, 14, 15)
+# inverse: STD_FOR_PROJ[p] = training slot holding project joint p.
+STD_FOR_PROJ = (0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 8)
+
+
 # MotionBERT H36M output is root-relative in a normalized space where the full
 # body spans ~2 units (roughly [-1, 1]). Scale so an adult is ~1.7 m tall.
 MOTIONBERT_OUTPUT_SCALE_M = 0.85
@@ -430,8 +449,13 @@ class MotionBERTEstimator:
             motion = np.concatenate(
                 [h36m_2d, vis[..., None]], axis=-1
             ).astype(np.float32)                              # (T, 17, 3)
-            motion_norm = _crop_scale(motion)                 # (T,17,3) in [-1,1]
-            h36m_3d = self._infer_motionbert(motion_norm)     # (T,17,3) root-rel
+            # Re-index into the layout the released weights were trained on,
+            # run the lifter, then map the prediction back so everything
+            # downstream keeps using the project's own joint order.
+            motion_std = motion[:, list(PROJ_FOR_STD), :]     # (T,17,3)
+            motion_norm = _crop_scale(motion_std)             # (T,17,3) in [-1,1]
+            h36m_3d_std = self._infer_motionbert(motion_norm)  # (T,17,3) root-rel
+            h36m_3d = h36m_3d_std[:, list(STD_FOR_PROJ), :]   # -> project layout
             # DSTformer output is a normalized, root-relative 3D pose; scale to
             # meters. expand_joints wants millimetres.
             h36m_3d_m = h36m_3d * MOTIONBERT_OUTPUT_SCALE_M
@@ -442,6 +466,23 @@ class MotionBERTEstimator:
             h36m_3d_m = _denormalize_3d(
                 h36m_3d_norm, scale, self.skeleton_scale_m
             )
+
+        # --- image frame (Y down) -> skeleton frame (Y up) ------------------
+        # Both lifting paths inherit the 2D image convention, where +Y points
+        # DOWN: MotionBERT is trained on image-space H36M, and the geometric
+        # fallback builds depth on top of the same 2D coordinates. Measured on
+        # the DSTformer release, relative to the pelvis: head dy = -0.64,
+        # ankle dy = +0.95.
+        #
+        # `expand_joints` / `skeleton_def` are Y-UP (rest pose has HEAD at
+        # y=1.55 and L_FOOT at y=0.02), so handing the lifter's output over
+        # unconverted puts every captured performer on their head.
+        #
+        # Negating Y alone would also mirror the pose (it flips handedness and
+        # swaps left/right). Rotating 180 deg about X -- (x, -y, -z) -- is a
+        # proper rotation (det = +1), so chirality is preserved and the
+        # character ends up upright and facing +Z as documented.
+        h36m_3d_m = h36m_3d_m * np.array([1.0, -1.0, -1.0], dtype=h36m_3d_m.dtype)
 
         # H36M-17 -> SMPL-24 (expand_joints expects mm input -> m output)
         smpl24 = expand_h36m17_to_smpl24_mm(h36m_3d_m * 1000.0)   # (T,24,3)

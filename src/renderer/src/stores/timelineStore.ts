@@ -55,6 +55,56 @@ const TRACK_COLORS: Record<TimelineTrackType, string> = {
   vfx: '#a855f7'
 }
 
+/**
+ * A character track is *monophonic*: the performer can only hold one pose at a
+ * given instant, so two clips must never cover the same moment. If they do, the
+ * scene controller ends up calling `seekToFrame` twice for one player in one
+ * frame and the winner is decided by array order (which `splitClip` reorders),
+ * i.e. the pose shown is arbitrary.
+ *
+ * Returns the legal start time closest to `desired` at which a clip of
+ * `duration` fits between `others` without overlapping any of them.
+ */
+const EPS = 1e-6
+
+/**
+ * Clips are kept sorted by `startTime` after every mutation. Nothing should
+ * depend on their array order — but `splitClip` used to append the two halves
+ * at the end, silently reshuffling the lane. Normalising here means the order
+ * is always the order you see on screen.
+ */
+function sortClips(clips: TimelineClip[]): TimelineClip[] {
+  return [...clips].sort((a, b) => a.startTime - b.startTime)
+}
+
+function nearestFreeStart(
+  others: TimelineClip[],
+  desired: number,
+  duration: number
+): number {
+  const sorted = [...others].sort((a, b) => a.startTime - b.startTime)
+  const gaps: Array<[number, number]> = []
+  let cursor = 0
+  for (const c of sorted) {
+    if (c.startTime - cursor >= duration - EPS) gaps.push([cursor, c.startTime - duration])
+    cursor = Math.max(cursor, c.startTime + c.duration)
+  }
+  gaps.push([cursor, Number.POSITIVE_INFINITY])
+
+  const want = Math.max(0, desired)
+  let best = cursor
+  let bestDist = Number.POSITIVE_INFINITY
+  for (const [lo, hi] of gaps) {
+    const cand = Math.min(Math.max(want, lo), hi)
+    const dist = Math.abs(cand - want)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = cand
+    }
+  }
+  return Math.max(0, best)
+}
+
 export const useTimelineStore = create<TimelineStoreState>((set, get) => ({
   tracks: [],
   duration: 30,
@@ -113,12 +163,14 @@ export const useTimelineStore = create<TimelineStoreState>((set, get) => ({
       return ''
     }
     const id = uuid()
-    const full: TimelineClip = { ...clip, id }
+    // Never drop a clip on top of one that is already there.
+    const startTime = nearestFreeStart(track.clips, clip.startTime, clip.duration)
+    const full: TimelineClip = { ...clip, id, startTime }
     set((s) => ({
       tracks: s.tracks.map((t) =>
-        t.id === trackId ? { ...t, clips: [...t.clips, full] } : t
+        t.id === trackId ? { ...t, clips: sortClips([...t.clips, full]) } : t
       ),
-      duration: Math.max(s.duration, clip.startTime + clip.duration + 0.5)
+      duration: Math.max(s.duration, startTime + clip.duration + 0.5)
     }))
     return id
   },
@@ -146,31 +198,63 @@ export const useTimelineStore = create<TimelineStoreState>((set, get) => ({
     })),
 
   moveClip: (clipId, newStartTime, newTrackId) =>
-    set((s) => ({
-      tracks: s.tracks.map((t) => {
-        if (newTrackId && t.id !== newTrackId) {
-          // remove from this track if it lived here
-          return { ...t, clips: t.clips.filter((c) => c.id !== clipId) }
-        }
-        return {
-          ...t,
-          clips: t.clips.map((c) =>
-            c.id === clipId ? { ...c, startTime: Math.max(0, newStartTime) } : c
-          )
-        }
-      })
-    })),
+    set((s) => {
+      const moving = s.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
+      if (!moving) return {}
+      const targetId = newTrackId ?? s.tracks.find((t) => t.clips.some((c) => c.id === clipId))?.id
+      const target = s.tracks.find((t) => t.id === targetId)
+      // Clamp against every clip on the destination track except the one moving.
+      const start = nearestFreeStart(
+        (target?.clips ?? []).filter((c) => c.id !== clipId),
+        newStartTime,
+        moving.duration
+      )
+      return {
+        tracks: s.tracks.map((t) => {
+          if (t.id !== targetId) {
+            // Dragged to another lane: drop it from the one it used to live on.
+            return t.clips.some((c) => c.id === clipId)
+              ? { ...t, clips: t.clips.filter((c) => c.id !== clipId) }
+              : t
+          }
+          const already = t.clips.some((c) => c.id === clipId)
+          const clips = already
+            ? t.clips.map((c) => (c.id === clipId ? { ...c, startTime: start } : c))
+            : [...t.clips, { ...moving, startTime: start }]
+          return { ...t, clips: sortClips(clips) }
+        })
+      }
+    }),
 
   trimClip: (clipId, trimStart, trimEnd) =>
     set((s) => ({
-      tracks: s.tracks.map((t) => ({
-        ...t,
-        clips: t.clips.map((c) => {
-          if (c.id !== clipId) return c
-          const duration = Math.max(0.05, trimEnd - trimStart)
-          return { ...c, startTime: trimStart, duration }
-        })
-      }))
+      tracks: s.tracks.map((t) => {
+        if (!t.clips.some((c) => c.id === clipId)) return t
+        const others = t.clips.filter((c) => c.id !== clipId)
+        // A resize must stop at the neighbours' edges, not run through them.
+        const leftBound = Math.max(
+          0,
+          ...others.map((o) => o.startTime + o.duration).filter((e) => e <= trimEnd + EPS)
+        )
+        const rightCandidates = others
+          .map((o) => o.startTime)
+          .filter((st) => st >= trimStart - EPS)
+        const rightBound = rightCandidates.length
+          ? Math.min(...rightCandidates)
+          : Number.POSITIVE_INFINITY
+        const start = Math.max(trimStart, leftBound)
+        const end = Math.min(trimEnd, rightBound)
+        return {
+          ...t,
+          clips: sortClips(
+            t.clips.map((c) =>
+              c.id === clipId
+                ? { ...c, startTime: start, duration: Math.max(0.05, end - start) }
+                : c
+            )
+          )
+        }
+      })
     })),
 
   splitClip: (clipId, splitTime) =>
@@ -187,7 +271,10 @@ export const useTimelineStore = create<TimelineStoreState>((set, get) => ({
           startTime: splitTime,
           duration: clip.duration - localSplit
         }
-        return { ...t, clips: [...t.clips.filter((c) => c.id !== clipId), first, second] }
+        return {
+          ...t,
+          clips: sortClips([...t.clips.filter((c) => c.id !== clipId), first, second])
+        }
       })
       return { tracks }
     }),

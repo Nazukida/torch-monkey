@@ -28,11 +28,44 @@ from typing import List, Optional
 
 import numpy as np
 
+from dataclasses import dataclass
+
 log = logging.getLogger(__name__)
 
-__all__ = ["MediaPipeEstimator", "NUM_BLAZEPOSE_JOINTS"]
+__all__ = ["MediaPipeEstimator", "NUM_BLAZEPOSE_JOINTS", "DetectionStats"]
 
 NUM_BLAZEPOSE_JOINTS = 33
+
+
+@dataclass(frozen=True)
+class DetectionStats:
+    """How much of a clip actually contained a detectable person.
+
+    ``process_batch`` fills every gap (carry-forward + median), so its output
+    array looks equally valid whether MediaPipe saw a performer in every frame
+    or in none of them. Without this, a video with no person in it yields a
+    confident-looking motion built entirely from filler. Callers use
+    ``detection_rate`` to refuse or warn.
+    """
+
+    frames_total: int
+    frames_detected: int
+    mean_visibility: float
+
+    @property
+    def detection_rate(self) -> float:
+        """Fraction of frames with a real detection, 0.0-1.0."""
+        if self.frames_total <= 0:
+            return 0.0
+        return self.frames_detected / float(self.frames_total)
+
+    def to_dict(self) -> dict:
+        return {
+            "framesTotal": self.frames_total,
+            "framesDetected": self.frames_detected,
+            "detectionRate": round(self.detection_rate, 4),
+            "meanVisibility": round(self.mean_visibility, 4),
+        }
 
 # Default search locations for the pose landmarker task model.
 _DEFAULT_MODEL_CANDIDATES = (
@@ -201,7 +234,8 @@ class MediaPipeEstimator:
         *,
         visibility_threshold: float = 0.3,
         median_window: int = 3,
-    ) -> np.ndarray:
+        return_stats: bool = False,
+    ):
         """Run detection over a sequence of frames with robust gap-filling.
 
         Pipeline
@@ -228,6 +262,9 @@ class MediaPipeEstimator:
             Below this, a joint is treated as missing for the median filter.
         median_window : int
             Odd window size for the temporal median fill (>= 3).
+        return_stats : bool
+            When True, return ``(array, DetectionStats)`` instead of just the
+            array, so the caller can tell a real capture from all-filler.
 
         Returns
         -------
@@ -242,16 +279,23 @@ class MediaPipeEstimator:
 
         T = len(frames)
         if T == 0:
-            return np.zeros((0, NUM_BLAZEPOSE_JOINTS, 4), dtype=np.float32)
+            empty = np.zeros((0, NUM_BLAZEPOSE_JOINTS, 4), dtype=np.float32)
+            if return_stats:
+                return empty, DetectionStats(0, 0, 0.0)
+            return empty
 
         # Stage A: detect + carry-forward.
         raw = np.full((T, NUM_BLAZEPOSE_JOINTS, 4), np.nan, dtype=np.float32)
         last_good: Optional[np.ndarray] = None
+        detected = 0
+        vis_sum = 0.0
         for i, frame in enumerate(frames):
             kp = self.process_frame(frame)
             if kp is not None:
                 raw[i] = kp
                 last_good = kp
+                detected += 1
+                vis_sum += float(np.mean(kp[:, 3]))
             elif last_good is not None:
                 raw[i] = last_good
             # else: leave NaN (leading gap) -> fixed by median fill / zeros below.
@@ -278,7 +322,22 @@ class MediaPipeEstimator:
         vis = np.clip(vis, 0.0, 1.0)
         filled[..., 3] = vis
 
-        return filled.astype(np.float32, copy=False)
+        out = filled.astype(np.float32, copy=False)
+        if return_stats:
+            stats = DetectionStats(
+                frames_total=T,
+                frames_detected=detected,
+                mean_visibility=(vis_sum / detected) if detected else 0.0,
+            )
+            if detected == 0:
+                log.warning("No pose detected in any of the %d frames.", T)
+            elif stats.detection_rate < 0.5:
+                log.warning(
+                    "Pose detected in only %d/%d frames (%.0f%%); the rest is filler.",
+                    detected, T, stats.detection_rate * 100.0,
+                )
+            return out, stats
+        return out
 
     # ------------------------------------------------------------------
     def close(self):

@@ -725,13 +725,37 @@ async def _run_pipeline_from_file(
         await broker.update(task_id, stage="extract_frames",
                             progress=start_progress + 0.05, message=f"{len(frames)} frames")
 
+        # Frames are only dropped, never interpolated, so the achieved rate can
+        # be lower than the requested one (asking 30 fps of 24 fps footage gives
+        # 24). Everything downstream -- export, kime timing, duration -- has to
+        # use what we actually got, or the motion plays back at the wrong speed.
+        fps = float(getattr(processor, "effective_fps", fps) or fps)
+
         # Step 2: 2D keypoints (MediaPipe BlazePose 33)
         await broker.update(task_id, stage="pose_2d", progress=start_progress + 0.15)
         try:
-            keypoints_2d = runtime.mediapipe.process_batch(frames)
+            keypoints_2d, det_stats = runtime.mediapipe.process_batch(
+                frames, return_stats=True
+            )
         except Exception as exc:
             await broker.fail(task_id, f"2D estimation: {exc}")
             raise HTTPException(status_code=500, detail=f"2D pose estimation failed: {exc}") from exc
+
+        # process_batch fills every gap, so its output looks equally valid
+        # whether a performer was visible in every frame or in none. Without
+        # this gate a video with no person in it silently produces a
+        # confident-looking motion built entirely from filler.
+        if det_stats.frames_detected == 0:
+            await broker.fail(task_id, "no person detected")
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"视频里没有检测到人体（{det_stats.frames_total} 帧全部未检出），"
+                    "无法生成动作。请确认画面中有完整可见的人物。 / "
+                    f"No person detected in any of the {det_stats.frames_total} frames; "
+                    "nothing to capture."
+                ),
+            )
         await broker.update(task_id, stage="pose_2d", progress=start_progress + 0.30)
 
         # Step 3: 3D lifting (MotionBERT) -> SMPL_24 (24, 3)
@@ -779,20 +803,35 @@ async def _run_pipeline_from_file(
         await broker.complete(task_id, message="completed")
 
         duration = float(len(frames) / fps) if fps > 0 else 0.0
+        warnings: List[str] = []
+        if det_stats.detection_rate < 0.5:
+            warnings.append(
+                f"仅 {det_stats.frames_detected}/{det_stats.frames_total} 帧检测到人体"
+                f"（{det_stats.detection_rate * 100:.0f}%），其余为插值填充，动作可能不可靠。 / "
+                f"Only {det_stats.frames_detected}/{det_stats.frames_total} frames had a "
+                "detected pose; the rest is interpolated filler."
+            )
+
         stats = {
             "frameCount": len(frames),
             "durationSeconds": duration,
             "kimeCount": len(kime_frames),
             "kimeFrames": kime_frames,
+            "detection": det_stats.to_dict(),
             "task_id": task_id,
         }
-        logger.info("pipeline complete: task=%s source=%s frames=%d kime=%d",
-                    task_id, source_label, len(frames), len(kime_frames))
+        logger.info(
+            "pipeline complete: task=%s source=%s frames=%d kime=%d detected=%d/%d (%.0f%%)",
+            task_id, source_label, len(frames), len(kime_frames),
+            det_stats.frames_detected, det_stats.frames_total,
+            det_stats.detection_rate * 100.0,
+        )
         return {
             "task_id": task_id,
             "status": "completed",
             "motion_data": motion_data,
             "stats": stats,
+            "warnings": warnings,
         }
 
     finally:

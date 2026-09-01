@@ -70,12 +70,27 @@ def quat_identity() -> np.ndarray:
 
 
 def quat_normalize(q: np.ndarray) -> np.ndarray:
-    """Return ``q`` rescaled to unit length; the zero quaternion -> identity."""
+    """Return ``q`` rescaled to unit length; the zero quaternion -> identity.
+
+    Normalises **per quaternion**, along the last axis, so a batch of shape
+    ``(..., 4)`` is handled row by row.
+
+    This used to take ``float(np.linalg.norm(q))`` -- the Frobenius norm of the
+    *whole* array. For a single quaternion that is the right number, so every
+    scalar-path caller looked correct; but for an ``(N, 4)`` batch of unit
+    quaternions it is ``sqrt(N)``, so every rotation in the batch was divided by
+    ``sqrt(N)`` and silently damped toward identity. ``quat_to_matrix`` feeds
+    batches straight through here, and ``forward_kinematics`` reshapes an entire
+    clip to ``(T * 24, 4)`` -- a 90-frame clip was scaled by ``1/sqrt(2160)``,
+    collapsing all motion to sub-millimetre noise.
+    """
     q = np.asarray(q, dtype=np.float64)
-    n = float(np.linalg.norm(q))
-    if n < 1e-12:
-        return quat_identity()
-    return q / n
+    n = np.linalg.norm(q, axis=-1, keepdims=True)
+    good = n >= 1e-12
+    out = np.divide(q, n, out=np.zeros_like(q), where=good)
+    # Degenerate (near-zero) quaternions become the identity, elementwise.
+    out = np.where(good, out, quat_identity())
+    return out if q.ndim > 1 else out.reshape(q.shape)
 
 
 def quat_to_matrix(q: np.ndarray) -> np.ndarray:

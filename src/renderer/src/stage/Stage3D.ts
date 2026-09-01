@@ -30,6 +30,11 @@ function hexToColor3(hex: string): Color3 {
  * The 3D stage: floor (+ reference grid), and an orbit camera.
  * Lighting lives in {@link Lighting}; together they sell the dark-venue look.
  */
+/** Matte floor specular. Kept as constants because 'reflective' mutates the
+ *  same StandardMaterial instance and 'solid' has to be able to undo it. */
+const SOLID_SPECULAR = new Color3(0.05, 0.05, 0.08)
+const SOLID_SPECULAR_POWER = 64
+
 export class Stage3D {
   private scene: Scene
   private canvas: HTMLCanvasElement
@@ -96,7 +101,8 @@ export class Stage3D {
     // Solid material fallback
     this.solidMat = new StandardMaterial('stageSolid', this.scene)
     this.solidMat.diffuseColor = hexToColor3(config.floorColor)
-    this.solidMat.specularColor = new Color3(0.05, 0.05, 0.08)
+    this.solidMat.specularColor = SOLID_SPECULAR.clone()
+    this.solidMat.specularPower = SOLID_SPECULAR_POWER
 
     this.applyFloorMode()
   }
@@ -109,6 +115,11 @@ export class Stage3D {
         this.gridMat.opacity = this.config.showGrid ? 0.6 : 0.15
         break
       case 'solid':
+        // Restore the matte look. 'reflective' below mutates this same shared
+        // material, so without resetting here the floor keeps the glossy
+        // specular forever once the user has visited 'reflective' one time.
+        this.solidMat.specularColor = SOLID_SPECULAR.clone()
+        this.solidMat.specularPower = SOLID_SPECULAR_POWER
         this.floor.material = this.solidMat
         break
       case 'reflective':

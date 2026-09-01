@@ -99,20 +99,33 @@ export function Select<T extends string>({
 export function Toggle({
   label,
   value,
-  onChange
+  onChange,
+  disabled = false,
+  hint
 }: {
   label: string
   value: boolean
   onChange: (v: boolean) => void
+  /** Greys the row out and blocks input — use when the setting has no effect. */
+  disabled?: boolean
+  /** Tooltip explaining why it is unavailable. */
+  hint?: string
 }): React.JSX.Element {
   return (
-    <label className="mb-2 flex cursor-pointer items-center justify-between">
+    <label
+      title={hint}
+      className={
+        'mb-2 flex items-center justify-between ' +
+        (disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer')
+      }
+    >
       <span className="text-xs text-zinc-400">{label}</span>
       <input
         type="checkbox"
         checked={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 accent-blue-500"
+        className="h-4 w-4 accent-blue-500 disabled:cursor-not-allowed"
       />
     </label>
   )

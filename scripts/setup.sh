@@ -114,8 +114,19 @@ if [ "$CUDA" = "cpu" ]; then
   info "torch: 用户指定 --cpu，安装 CPU 版 / CPU build."
 elif [ "$CUDA" = "auto" ]; then
   if command -v nvidia-smi >/dev/null 2>&1; then
-    info "GPU: 检测到 nvidia-smi → 安装 CUDA 版 torch (cu121) / CUDA build (cu121)."
-    WANT_CUDA="121"
+    # Pick the CUDA build from the card's *compute capability*, not blindly
+    # cu121. Blackwell (RTX 50xx) is sm_120 and has no kernels in cu121
+    # builds: torch installs fine, then dies at the first kernel launch with
+    # "no kernel image is available for execution on the device".
+    CAP="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -d ' ')"
+    CAP_MAJOR="${CAP%%.*}"
+    if [ -n "$CAP_MAJOR" ] && [ "$CAP_MAJOR" -ge 12 ] 2>/dev/null; then
+      info "GPU: compute capability $CAP (Blackwell+) -> cu128 build."
+      WANT_CUDA="128"
+    else
+      info "GPU: compute capability ${CAP:-unknown} -> cu121 build."
+      WANT_CUDA="121"
+    fi
   else
     info "GPU: 未检测到 nvidia-smi → CPU 版 torch / CPU build."
   fi
@@ -123,16 +134,24 @@ else
   WANT_CUDA="$CUDA"
   info "GPU: 用户指定 --cuda $CUDA / requested cu$CUDA torch."
 fi
-if [ "$WANT_CUDA" = "121" ] || [ "$WANT_CUDA" = "118" ]; then
+if [ "$WANT_CUDA" = "121" ] || [ "$WANT_CUDA" = "118" ] || [ "$WANT_CUDA" = "128" ]; then
+  # torch version must match the CUDA build: sm_120 kernels first ship in
+  # cu128 wheels, which start at torch 2.7. cu118/cu121 stay on 2.5.1.
+  if [ "$WANT_CUDA" = "128" ]; then TORCH_PIN="torch==2.9.1"; else TORCH_PIN="torch==2.5.1"; fi
   TORCH_INDEX="https://download.pytorch.org/whl/cu$WANT_CUDA"
-  info "${PIP[*]} torch==2.5.1 --index-url $TORCH_INDEX"
-  "${PIP[@]}" "torch==2.5.1" --index-url "$TORCH_INDEX" \
+  info "${PIP[*]} $TORCH_PIN --index-url $TORCH_INDEX"
+  "${PIP[@]}" "$TORCH_PIN" --index-url "$TORCH_INDEX" \
     || fail "CUDA torch 安装失败 / CUDA torch install failed. 重试 --cpu 或核对 CUDA 版本 / try --cpu or verify your CUDA toolkit."
+elif [ -n "$WANT_CUDA" ]; then
+  fail "unsupported --cuda: $WANT_CUDA (supported: 118, 121, 128)"
 fi
 
 # 5) requirements (CPU torch line satisfied by whatever was installed above)
-info "${PIP[*]} -r requirements.txt"
-( cd "$PY_DIR" && "${PIP[@]}" -r requirements.txt ) \
+# -c constraints-numpy1.txt pins mediapipe's unpinned jax/jaxlib/opencv-contrib,
+# which otherwise demand numpy>=2 and send pip into a backtrack loop against
+# our pinned numpy==1.26.4.
+info "${PIP[*]} -r requirements.txt -c constraints-numpy1.txt"
+( cd "$PY_DIR" && "${PIP[@]}" -r requirements.txt -c constraints-numpy1.txt ) \
   || fail "依赖安装失败 / requirements install failed."
 
 # 6) model weights (idempotent)

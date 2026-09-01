@@ -55,6 +55,7 @@ from lib.skeleton_def import (  # noqa: E402
 from lib.forward_kinematics import (  # noqa: E402
     forward_kinematics,
     quat_identity,
+    quat_to_matrix,
 )
 from pipeline.ik_solver import positions_to_rotations  # noqa: E402
 from pipeline.wotagei_optimizer import WotageiOptimizer  # noqa: E402
@@ -194,6 +195,97 @@ def check_motion(positions: np.ndarray, name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Absolute FK check (closed-form, no FK in the expected value).
+#
+# Every other test here is a *round trip*: it builds its ground truth with the
+# same functions it then verifies, so a bug living inside FK cancels out on both
+# sides and the suite stays green. That is exactly how a batch-normalisation bug
+# in `quat_normalize` survived -- it divided an (N,4) batch by sqrt(N), damping
+# every rotation toward identity, while the round trip still closed perfectly.
+#
+# These two checks are immune because the expected values come from geometry:
+#   * rotating joint j (and nothing else) rigidly rotates j and all of its
+#     descendants about the world position of j's PARENT -- the rotation is
+#     applied to the incoming bone. So a descendant d moves by the chord
+#         |R·v - v| = 2·sin(θ/2)·|v_perp|
+#     where v = rest[d] - rest[parent(j)] and v_perp is v's component
+#     perpendicular to the rotation axis.
+#   * quaternion -> matrix must not depend on how many quaternions were handed
+#     over at once.
+# ---------------------------------------------------------------------------
+def _chord(v: np.ndarray, axis: np.ndarray, angle: float) -> float:
+    """Closed-form displacement of point ``v`` under a rotation about ``axis``."""
+    axis = axis / np.linalg.norm(axis)
+    v_par = np.dot(v, axis) * axis
+    v_perp = v - v_par
+    return 2.0 * abs(np.sin(angle / 2.0)) * float(np.linalg.norm(v_perp))
+
+
+def check_fk_absolute() -> bool:
+    """FK displacement must equal the analytic chord for a single-joint rotation."""
+    cases = [
+        # (rotated joint, observed descendant, axis, degrees)
+        (16, 22, np.array([0.0, 1.0, 0.0]), 60.0),   # L_SHOULDER yaw  -> L_HAND
+        (16, 22, np.array([0.0, 0.0, 1.0]), 60.0),   # L_SHOULDER lift -> L_HAND
+        (18, 22, np.array([0.0, 1.0, 0.0]), 45.0),   # L_ELBOW         -> L_HAND
+        (1, 10, np.array([0.0, 0.0, 1.0]), 30.0),    # L_HIP           -> L_FOOT
+        (3, 15, np.array([1.0, 0.0, 0.0]), 25.0),    # SPINE_1         -> HEAD
+    ]
+    worst = 0.0
+    ok = True
+    for j, d, axis, deg in cases:
+        ang = np.deg2rad(deg)
+        rot = np.zeros((1, NUM_JOINTS, 4), dtype=np.float64)
+        rot[..., 3] = 1.0
+        rot[0, j] = _axis_angle_quat(axis, ang)
+        root = SMPL24_REST_POSE[0][None, :].copy()
+
+        got = float(np.linalg.norm(forward_kinematics(rot, root)[0, d] - SMPL24_REST_POSE[d]))
+        pivot = SMPL24_REST_POSE[SMPL24_PARENTS[j]]
+        want = _chord(SMPL24_REST_POSE[d] - pivot, axis, ang)
+
+        err = abs(got - want)
+        worst = max(worst, err)
+        if err > 1e-6:
+            ok = False
+            print(
+                f"  [FAIL] rotate {SMPL24_NAMES[j]} {deg:.0f}deg -> "
+                f"{SMPL24_NAMES[d]} moved {got * 100:.2f} cm, expected {want * 100:.2f} cm"
+            )
+    status = "PASS" if ok else "FAIL"
+    print(f"  [{status}] FK absolute displacement: {len(cases)} cases, "
+          f"worst error {worst * 1000:.6f} mm (tol 0.001 mm)")
+    return ok
+
+
+def check_quat_batch_invariance() -> bool:
+    """quat_to_matrix must not depend on the batch size it is called with."""
+    rng = np.random.default_rng(0)
+    q = rng.standard_normal((7, 4))
+    q /= np.linalg.norm(q, axis=-1, keepdims=True)
+
+    one_by_one = np.stack([quat_to_matrix(q[i]) for i in range(len(q))])
+    as_batch = quat_to_matrix(q)
+    # also embed the same quaternions in a much larger batch
+    padded = np.zeros((500, 4)); padded[:, 3] = 1.0; padded[:7] = q
+    in_big_batch = quat_to_matrix(padded)[:7]
+
+    d_batch = float(np.abs(one_by_one - as_batch).max())
+    d_big = float(np.abs(one_by_one - in_big_batch).max())
+    # every result must also be a proper rotation matrix
+    dets = np.linalg.det(as_batch)
+    orth = float(np.abs(np.einsum("nij,nkj->nik", as_batch, as_batch)
+                        - np.eye(3)).max())
+
+    ok = d_batch < 1e-12 and d_big < 1e-12 and np.allclose(dets, 1.0) and orth < 1e-12
+    status = "PASS" if ok else "FAIL"
+    print(f"  [{status}] quat_to_matrix batch invariance: "
+          f"vs-batch {d_batch:.2e}, vs-500-batch {d_big:.2e}, "
+          f"det {dets.min():.6f}..{dets.max():.6f}, orthonormality {orth:.2e}")
+    return ok
+
+
+# ---------------------------------------------------------------------------
 # Optimiser + exporter smoke tests.
 # ---------------------------------------------------------------------------
 def check_optimizer() -> bool:
@@ -308,15 +400,19 @@ def main() -> int:
 
     results: List[bool] = []
 
-    print("\n[1/3] Position -> Rotation -> FK round trip (IK solver accuracy):")
+    print("\n[1/4] Absolute FK check (closed-form expected values, no round trip):")
+    results.append(check_fk_absolute())
+    results.append(check_quat_batch_invariance())
+
+    print("\n[2/4] Position -> Rotation -> FK round trip (IK solver accuracy):")
     for synth in (synth_left_hand_circle, synth_right_arm_wave):
         positions, _local, name = synth()
         results.append(check_motion(positions, name))
 
-    print("\n[2/3] WotageiOptimizer round-trip + kime detection:")
+    print("\n[3/4] WotageiOptimizer round-trip + kime detection:")
     results.append(check_optimizer())
 
-    print("\n[3/3] FormatExporter.to_motion_data schema + JSON serialisability:")
+    print("\n[4/4] FormatExporter.to_motion_data schema + JSON serialisability:")
     # Use the circle motion for the exporter smoke test.
     positions, _, _ = synth_left_hand_circle(T=40)
     results.append(check_exporter(positions))
